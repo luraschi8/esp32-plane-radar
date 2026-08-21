@@ -73,8 +73,10 @@ frame (background, rings, crosshairs, runway overlay, center dot, labels, aircra
 `LGFX_Sprite` and blits it in a single `pushSprite` — this is what kills flicker. Pixels are never cached
 between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~35-42 KB free), but the runway
 overlay caches its *screen-space geometry* in `runway_overlay.cpp` and rebuilds only when the range preset or
-radar centre moves. Measured frame budget: 55.3 ms total (18 FPS ceiling) = grid 10.5 + aircraft 21.5 + a
-23.1 ms `pushSprite`, the last being the SPI transfer at its 40 MHz limit (115,200 B x 8 / 40 MHz = 23.0 ms). The sprite is 240×240×16bpp ≈ **115 KB**, on a
+radar centre moves. Measured frame budget: **43.8 ms total (23 FPS ceiling)** = grid 10.5 + aircraft 21.5 + an
+11.6 ms `pushSprite`, the last being a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms
+theoretical). Rendering runs at `kRenderIntervalMs` (100 ms) independently of the ~3.5 s fetch cycle. The
+sprite is 240×240×16bpp ≈ **115 KB**, on a
 chip with ~320 KB heap, so any new large allocation must be checked against that. `ensureFrameSprite()` failing
 falls back to drawing straight to the panel.
 
