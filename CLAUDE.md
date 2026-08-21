@@ -121,6 +121,9 @@ Concretely, when writing or reviewing code here:
 - **Fragmentation matters as much as totals.** A 16 KB allocation can fail with 37 KB free. Prefer
   fixed-size buffers, streaming, and small chunked allocations over one large block. This is exactly
   what broke the ADS-B client (`payload.reserve(content_length + 1)`).
+- **`kDisplaySpiWriteHz` is at the silicon maximum (80 MHz).** If the panel ever shows speckle, torn
+  rows, or colour corruption, suspect SPI signal integrity first (wiring length, jumper quality) and
+  drop to 60 or 40 MHz in `include/config.h` to confirm.
 - **No heap in the draw path.** Aircraft live in a static `Aircraft[64]`; the airport dataset is
   `const` in flash; the frame sprite is allocated once and reused. Keep it that way.
 - **Watch per-frame cost.** `renderFrame()` walks all 1,706 runway segments every redraw, and the

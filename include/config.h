@@ -39,7 +39,7 @@ constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_4;  // display SCL
 constexpr int kDisplayWidth = 240;
 constexpr int kDisplayHeight = 240;
 
-constexpr uint32_t kDisplaySpiWriteHz = 40000000;
+constexpr uint32_t kDisplaySpiWriteHz = 80000000;
 // GC9A01 modules often need invert + BGR for correct black/green output
 constexpr bool kDisplayInvert = true;
 constexpr bool kDisplayRgbOrder = true;
