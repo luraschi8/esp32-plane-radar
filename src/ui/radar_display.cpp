@@ -325,6 +325,33 @@ int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
   return max_w;
 }
 
+/** Placed tag blocks for the current frame; keeps labels from overprinting. */
+struct TagRect {
+  int16_t x, y, w, h;
+};
+TagRect s_tag_rects[services::adsb::kMaxAircraft];
+size_t s_tag_rect_count = 0;
+
+/**
+ * Candidate tag slots, in preference order. Displacement is deliberately tiny:
+ * a tag more than one text line away from its symbol reads as belonging to a
+ * different aircraft, so we flip sides before moving vertically at all and give
+ * up entirely rather than place a label somewhere ambiguous.
+ */
+struct TagSlot {
+  bool flip_side;   // use the side away from the radar centre
+  int8_t line_dy;   // vertical offset in whole text lines
+};
+constexpr TagSlot kTagSlots[] = {
+    {false, 0}, {true, 0}, {false, -1}, {true, -1}, {false, 1}, {true, 1},
+};
+constexpr size_t kTagSlotCount = sizeof(kTagSlots) / sizeof(kTagSlots[0]);
+
+bool tagRectsOverlap(const TagRect& a, const TagRect& b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y ||
+           b.y + b.h <= a.y);
+}
+
 void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
   initTagLabelMetrics();
   applyTagStyle();
@@ -332,23 +359,59 @@ void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
   const int line_h = s_draw->fontHeight();
   const int block_w = measureTagBlockWidth(plane);
   const int block_h = line_h * 3;
-  int ly = y - block_h / 2;
 
   const int symbol_half =
       radar::kAircraftNoseLenPx + radar::kAircraftTailHalfPx;
-  // West (left): tag toward center on the right; east (right): tag on the left.
-  const bool tag_on_right = x < radar::kCenterX;
+  // Default side faces the radar centre: west (left) of centre -> tag on the
+  // right of the symbol, east -> tag on the left.
+  const bool prefers_right = x < radar::kCenterX;
+
   int anchor_x = 0;
-  if (tag_on_right) {
-    anchor_x = x + symbol_half + radar::kAircraftLabelGapPx;
-    anchor_x = std::min(anchor_x, radar::kSize - block_w - 1);
-    s_draw->setTextDatum(textdatum_t::top_left);
-  } else {
-    anchor_x = x - symbol_half - radar::kAircraftLabelGapPx;
-    anchor_x = std::max(anchor_x, block_w + 1);
-    s_draw->setTextDatum(textdatum_t::top_right);
+  int ly = 0;
+  bool on_right = prefers_right;
+  bool placed = false;
+
+  // Callers run nearest-first, so when no slot is free it is the more distant
+  // aircraft that loses its label.
+  for (size_t slot = 0; slot < kTagSlotCount && !placed; ++slot) {
+    on_right = kTagSlots[slot].flip_side ? !prefers_right : prefers_right;
+
+    int block_left = 0;
+    if (on_right) {
+      anchor_x = std::min(x + symbol_half + radar::kAircraftLabelGapPx,
+                          radar::kSize - block_w - 1);
+      block_left = anchor_x;
+    } else {
+      anchor_x =
+          std::max(x - symbol_half - radar::kAircraftLabelGapPx, block_w + 1);
+      block_left = anchor_x - block_w;
+    }
+
+    ly = std::max(1, std::min(y - block_h / 2 + kTagSlots[slot].line_dy * line_h,
+                              radar::kSize - block_h - 1));
+
+    const TagRect candidate{static_cast<int16_t>(block_left),
+                            static_cast<int16_t>(ly),
+                            static_cast<int16_t>(block_w),
+                            static_cast<int16_t>(block_h)};
+    bool clash = false;
+    for (size_t r = 0; r < s_tag_rect_count && !clash; ++r) {
+      clash = tagRectsOverlap(candidate, s_tag_rects[r]);
+    }
+    if (clash) {
+      continue;
+    }
+    if (s_tag_rect_count < services::adsb::kMaxAircraft) {
+      s_tag_rects[s_tag_rect_count++] = candidate;
+    }
+    placed = true;
   }
-  ly = std::max(1, std::min(ly, radar::kSize - block_h - 1));
+  if (!placed) {
+    return;
+  }
+
+  s_draw->setTextDatum(on_right ? textdatum_t::top_left
+                                : textdatum_t::top_right);
 
   if (plane.callsign[0] != '\0') {
     s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
@@ -460,7 +523,10 @@ void drawAircraft() {
                     planes[i].gs_knots, radar::kColorTrackVector);
     drawHeadingTriangle(x, y, planes[i].nose_deg, radar::kColorAircraft);
   }
-  for (size_t d = 0; d < draw_count; ++d) {
+  // items[] is sorted far-first; walk it backwards so the closest aircraft
+  // claim their tag position before more distant ones.
+  s_tag_rect_count = 0;
+  for (size_t d = draw_count; d-- > 0;) {
     const size_t i = items[d].index;
     drawAircraftTag(items[d].x, items[d].y, planes[i]);
   }
@@ -525,11 +591,16 @@ void drawRings(int cx, int cy, int outer_radius) {
   }
 }
 
+// Both spokes are axis-aligned, so fillRect gives the same 2 px stroke as
+// drawWideLine without its per-pixel alpha blending, which measured 25.9 ms
+// per frame for these two lines alone (24% of the whole frame).
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
-  s_draw->drawWideLine(cx, cy - radius, cx, cy + radius,
-                       radar::kGridStrokeHalfWidth, color);
-  s_draw->drawWideLine(cx - radius, cy, cx + radius, cy,
-                       radar::kGridStrokeHalfWidth, color);
+  const int thickness =
+      std::max(1, static_cast<int>(radar::kGridStrokeHalfWidth * 2.0f));
+  const int offset = thickness / 2;
+  const int span = radius * 2 + 1;
+  s_draw->fillRect(cx - offset, cy - radius, thickness, span, color);
+  s_draw->fillRect(cx - radius, cy - offset, span, thickness, color);
 }
 
 void drawCenterDot(int cx, int cy) {
