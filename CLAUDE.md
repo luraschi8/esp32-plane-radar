@@ -26,7 +26,7 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.6% (1247066 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.6% (1247096 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
@@ -136,7 +136,11 @@ lower simply because the local sky is quieter. mbedTLS permanently holds ~33 KB 
 ~16.4 KB blocks plus a ~2.5 KB context; the frame sprite holds 115 KB; the fetch task's 8 KB stack and the
 second aircraft buffer come out of the same pool.
 
-**That 9,204 B largest block is the number to design against.** Nothing may request a larger contiguous
+**That 9,204 B largest block is the number to design against.** One existing consumer already brushes it:
+WiFiManager assembles each portal page into a single contiguous `String`, and the `/wifi` scan page crosses
+9.2 KB at roughly 16 visible access points — so in a dense-Wi-Fi area that page can fail to render while the
+radar is running. `/param` is far smaller, and the setup portal (after a BOOT reset) runs with no TLS session
+held. Nothing may request a larger contiguous
 allocation at runtime. It is also why the fetch task releases the TLS session (`s_client.stop()`) the moment
 the link drops: those ~33 KB must be back in the pool before WiFi restarts, or the reconnect itself can fail
 for want of memory. Every review and every change

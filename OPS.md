@@ -75,7 +75,7 @@ The size report at the end of every build is the memory budget. Current baseline
 
 ```
 RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
-Flash: [====      ]  39.6% (used 1247066 bytes from 3145728 bytes)
+Flash: [====      ]  39.6% (used 1247096 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite
@@ -219,3 +219,4 @@ the flash figure — the dataset is the largest single contributor to image size
 | `adsb: HTTP -1`, `adsb: no response stream`, `adsb: JSON parse error: … (heap=… largest=…)` | Transient network or adsb.fi hiccup; the previous frame is kept and the fetch task retries after the next gap. After 60 s with no successful fetch the traffic layer is cleared rather than shown stale |
 | Portal saves but nothing changes | `Invalid lat/lon in portal — keeping previous location` on serial means the coordinates failed parsing or range validation |
 | `.local` address won't resolve | mDNS is slow or blocked on some clients; use the IP printed on serial at boot |
+| Config portal serves a **blank page** (usually `/wifi` in a dense-Wi-Fi area) | WiFiManager builds each page into one contiguous `String` (~4.9 KB fixed plus ~278 B per scanned AP, so ~9.2 KB at ~16 APs), and while the radar is running the reused TLS session pins ~33 KB, leaving a largest free block of ~9.2 KB. Use `/param` (location, units, runways — a much smaller page), or hold BOOT 3 s to reboot into the setup portal, where no TLS session exists and the full heap is available |

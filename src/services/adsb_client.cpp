@@ -257,6 +257,22 @@ namespace {
 WiFiClientSecure s_client;
 HTTPClient s_http;
 bool s_client_configured = false;
+/**
+ * Guards a redundant stop(): ssl_client's teardown memsets its context and
+ * leaves socket == 0 rather than -1, so a second stop() calls close(0) -- the
+ * console descriptor. Inert here (lwIP fds start well above 0 and nothing reads
+ * stdin) but there is no reason to make the call.
+ */
+bool s_session_open = false;
+
+/** Tear the TLS session down at most once per session. */
+void stopSession() {
+  if (!s_session_open) {
+    return;
+  }
+  s_client.stop();
+  s_session_open = false;
+}
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
@@ -284,7 +300,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
-    s_client.stop();  // force a fresh session next time
+    stopSession();  // force a fresh session next time
     return false;
   }
 
@@ -292,7 +308,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (body == nullptr) {
     Serial.println("adsb: no response stream");
     http.end();
-    s_client.stop();
+    stopSession();
     return false;
   }
 
@@ -381,7 +397,7 @@ void fetchTask(void*) {
       // the WiFi stop/start cycles that need that heap to reconnect -- against
       // a ~12 KB min-free heap that can strand the device offline for good.
       // The old function-local client got this free from its destructor.
-      s_client.stop();
+      stopSession();
       Serial.println("adsb: link down, TLS session released");
     }
     was_connected = link_up;
