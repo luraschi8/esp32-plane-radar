@@ -96,7 +96,7 @@ Flash (section 4), open the serial monitor, and walk the checklist:
 | Portal at `http://plane-radar.local` or `http://192.168.4.1` | Wi-Fi form + Latitude / Longitude / miles / runways fields |
 | After saving Wi-Fi | `Connected: <ssid>  IP <addr>`, then the radar grid draws |
 | Every ~3 s | `adsb: N aircraft` on serial; symbols move between frames |
-| Short-tap BOOT | `Range: 10km (outer ~13 km)` — cycles 5 → 10 → 15 → 25 km, ring label changes |
+| Short-tap BOOT | `Range: 10km (outer ~13 km)` — cycles 5 → 10 → 15 → 20 → 25 km, ring label changes |
 | Hold BOOT 3 s | `BOOT held — resetting WiFi`, reset screen, reboot into the portal |
 | Reconnect (`http://<device-ip>`) | Portal reachable while the radar keeps running |
 

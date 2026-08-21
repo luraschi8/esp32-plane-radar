@@ -47,9 +47,6 @@ const lgfx::GFXfont* s_tag_gfx = &fonts::FreeSansBold12pt7b;
 bool s_tag_label_metrics_ready = false;
 bool s_tag_use_vlw = false;
 
-int s_scale_label_max_w = 0;
-int s_scale_label_h = 0;
-
 lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
@@ -136,20 +133,9 @@ void initLabelMetrics() {
     s_scale_use_vlw = false;
   }
 
+  // Leave the scale style selected: every draw site re-applies its own style,
+  // but this preserves the post-condition callers have always seen.
   applyScaleStyle();
-  s_scale_label_h = tft.fontHeight();
-  s_scale_label_max_w = 0;
-  char label[12];
-  for (size_t i = 0; i < radar::kRangePresetCount; ++i) {
-    for (bool miles : {false, true}) {
-      radar::formatRing3Label(label, sizeof(label), radar::kRangePresets[i].ring3_km,
-                              miles);
-      const int w = tft.textWidth(label);
-      if (w > s_scale_label_max_w) {
-        s_scale_label_max_w = w;
-      }
-    }
-  }
 
   s_label_metrics_ready = true;
 }

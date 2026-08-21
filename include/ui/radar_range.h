@@ -12,6 +12,7 @@ namespace ui::radar {
  *   5 km  — pattern / very local (airfield vicinity)
  *  10 km  — default; neighborhood spotting
  *  15 km  — wider local area
+ *  20 km  — extended local area
  *  25 km  — metro / regional picture
  *
  * Outer radius (for aircraft math) is ring-3 distance ÷ 0.75.
@@ -28,6 +29,7 @@ constexpr RangePreset kRangePresets[] = {
     {5.0f, 5.0f * kRing3ToOuterKm},
     {10.0f, 10.0f * kRing3ToOuterKm},
     {15.0f, 15.0f * kRing3ToOuterKm},
+    {20.0f, 20.0f * kRing3ToOuterKm},
     {25.0f, 25.0f * kRing3ToOuterKm},
 };
 
@@ -39,7 +41,6 @@ void rangeInit();
 /** Cycle preset and save to flash. */
 void rangeNext();
 const RangePreset& rangeCurrent();
-uint8_t rangeIndex();
 /** ADSB fetch radius (km): scaled to screen edge so beyond-ring dots have data. */
 float fetchRadiusKm();
 

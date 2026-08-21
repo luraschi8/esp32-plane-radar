@@ -17,7 +17,7 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
 
 | Action | Effect |
 |--------|--------|
-| **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
+| **Short tap** | Cycle range preset (5 → 10 → 15 → 20 → 25 km); saved to flash |
 | **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
 During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
@@ -64,6 +64,7 @@ Layout and colors: `include/ui/radar_theme.h`.
 | 5 km / 3 mi | ~6.7 km |
 | 10 km / 6 mi | ~13.3 km (default) |
 | 15 km / 9 mi | ~20 km |
+| 20 km / 12 mi | ~26.7 km |
 | 25 km / 16 mi | ~33.3 km |
 
 Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
