@@ -10,6 +10,8 @@ struct Aircraft {
   float nose_deg;
   float track_deg;
   float gs_knots;
+  /** API-computed distance from the radar centre (NM); < 0 if absent. */
+  float dst_nm;
   char callsign[9];
   char type[5];
   char alt[12];

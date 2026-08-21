@@ -46,46 +46,70 @@ int performGetWithPoll(HTTPClient& http) {
   return HTTPC_ERROR_READ_TIMEOUT;
 }
 
-bool readResponseBodyWithPoll(HTTPClient& http, String& payload) {
-  WiFiClient* stream = http.getStreamPtr();
-  if (stream == nullptr) {
-    return false;
-  }
-
-  const int content_length = http.getSize();
-  if (content_length > 0) {
-    payload.reserve(static_cast<unsigned>(content_length + 1));
-  }
-
-  uint8_t buffer[512];
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
-    pollNetwork();
-    const int available = stream->available();
-    if (available > 0) {
-      const int to_read =
-          available > static_cast<int>(sizeof(buffer)) ? static_cast<int>(sizeof(buffer))
-                                                       : available;
-      const int read_bytes = stream->readBytes(buffer, to_read);
-      if (read_bytes > 0) {
-        payload.concat(reinterpret_cast<const char*>(buffer),
-                       static_cast<unsigned>(read_bytes));
-      }
-    }
-    if (content_length > 0 &&
-        static_cast<int>(payload.length()) >= content_length) {
-      break;
-    }
-    if (!http.connected() && stream->available() <= 0) {
-      break;
-    }
-    delay(1);
-  }
-
-  return payload.length() > 0;
-}
-
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
+
+/**
+ * Feeds the HTTPS body straight into the JSON parser.
+ *
+ * The previous code buffered the whole body into a String first, which needed
+ * one contiguous Content-Length-sized block (~16 KB). On a fragmented heap that
+ * reserve() fails, the following concat() fails silently, and the read loop
+ * spins until its deadline and hands a truncated document to the parser.
+ * Streaming never allocates more than ArduinoJson's 4 KB pool chunks.
+ *
+ * pollNetwork() (wifiLoop) is called on a timer rather than per byte: the
+ * parser reads a character at a time, so polling every call would run the
+ * captive portal thousands of times per response.
+ */
+class PollingStream : public Stream {
+ public:
+  explicit PollingStream(Stream& inner) : inner_(inner) {}
+
+  int available() override {
+    poll();
+    return inner_.available();
+  }
+  int read() override { return inner_.read(); }
+  int peek() override { return inner_.peek(); }
+  size_t readBytes(char* buffer, size_t length) override {
+    poll();
+    return inner_.readBytes(buffer, length);
+  }
+  size_t write(uint8_t) override { return 0; }
+  void flush() override {}
+
+ private:
+  static constexpr unsigned long kPollIntervalMs = 20;
+
+  void poll() {
+    const unsigned long now = millis();
+    if (now - last_poll_ms_ >= kPollIntervalMs) {
+      last_poll_ms_ = now;
+      pollNetwork();
+    }
+  }
+
+  Stream& inner_;
+  unsigned long last_poll_ms_ = 0;
+};
+
+/**
+ * The only fields this client reads. adsb.fi returns ~53 per aircraft; parsing
+ * all of them peaks at ~32 KB of heap for a typical response and was failing
+ * with NoMemory. A filter still scans the whole body but only allocates for
+ * these keys, which measures ~9.6 KB for the same payload.
+ */
+constexpr const char* kWantedFields[] = {
+    "lat",  "lon", "true_heading", "mag_heading", "track",    "dir",
+    "gs",   "tas", "ias",          "alt_baro",    "alt_geom", "flight",
+    "hex",  "t",   "dst"};
+
+void buildFilter(JsonDocument& filter) {
+  JsonObject plane = filter["ac"][0].to<JsonObject>();
+  for (const char* key : kWantedFields) {
+    plane[key] = true;
+  }
+}
 
 bool readJsonFloat(const JsonObject& obj, const char* key, float* out) {
   if (obj[key].is<float>() || obj[key].is<double>() || obj[key].is<int>()) {
@@ -232,18 +256,24 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     return false;
   }
 
-  String payload;
-  if (!readResponseBodyWithPoll(http, payload)) {
-    Serial.println("adsb: empty response");
+  WiFiClient* body = http.getStreamPtr();
+  if (body == nullptr) {
+    Serial.println("adsb: no response stream");
     http.end();
     return false;
   }
-  http.end();
 
+  JsonDocument filter;
+  buildFilter(filter);
+
+  PollingStream polling(*body);
   JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, payload);
+  const DeserializationError err =
+      deserializeJson(doc, polling, DeserializationOption::Filter(filter));
+  http.end();
   if (err) {
-    Serial.printf("adsb: JSON parse error: %s\n", err.c_str());
+    Serial.printf("adsb: JSON parse error: %s (heap=%u largest=%u)\n",
+                  err.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     return false;
   }
 
@@ -270,6 +300,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].nose_deg = pickNoseHeading(plane);
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
+    float dst = -1.0f;
+    s_aircraft[n].dst_nm = readJsonFloat(plane, "dst", &dst) ? dst : -1.0f;
     fillTagFields(&s_aircraft[n], plane);
     ++n;
   }
