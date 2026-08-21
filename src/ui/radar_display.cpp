@@ -473,11 +473,12 @@ constexpr float kMaxExtrapolationSec = 12.0f;
 /** Skip the traffic layer rather than stall the frame if the fetch task holds the lock. */
 constexpr uint32_t kAircraftLockWaitMs = 20;
 
-void drawAircraft() {
+/** False when the aircraft list could not be locked; caller must not blit. */
+bool drawAircraft() {
   initLabelMetrics();
 
   if (!services::adsb::aircraftLock(kAircraftLockWaitMs)) {
-    return;
+    return false;
   }
 
   const size_t n = services::adsb::aircraftCount();
@@ -552,6 +553,7 @@ void drawAircraft() {
   }
 
   services::adsb::aircraftUnlock();
+  return true;
 }
 
 void applyCardinalStyle() {
@@ -690,11 +692,17 @@ bool ensureFrameSprite() {
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 void renderFrame() {
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  bool traffic_drawn = false;
   {
     const DrawScope scope(s_frame);
-    drawAircraft();
+    traffic_drawn = drawAircraft();
   }
-  s_frame.pushSprite(0, 0);
+  // The sprite now holds a grid with no traffic on it. Blitting that would
+  // flash every target off for a frame, so leave the last complete frame on
+  // the panel and try again on the next tick.
+  if (traffic_drawn) {
+    s_frame.pushSprite(0, 0);
+  }
   tft.setTextDatum(textdatum_t::top_left);
 }
 

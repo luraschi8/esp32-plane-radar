@@ -346,16 +346,21 @@ bool startFetchTask() {
   if (s_task != nullptr) {
     return true;
   }
-  s_mutex = xSemaphoreCreateMutex();
   if (s_mutex == nullptr) {
-    Serial.println("adsb: mutex alloc failed");
-    return false;
+    s_mutex = xSemaphoreCreateMutex();
+    if (s_mutex == nullptr) {
+      Serial.println("adsb: mutex alloc failed");
+      return false;
+    }
   }
   // Same priority as the Arduino loop task: the fetch spends nearly all its
   // time blocked on the socket, so the render loop runs while it waits.
   if (xTaskCreate(fetchTask, "adsb", kFetchTaskStackBytes, nullptr, 1, &s_task) !=
       pdPASS) {
-    Serial.println("adsb: fetch task create failed");
+    // Release the mutex too, or every retry strands another one.
+    Serial.println("adsb: fetch task create failed — radar will not update");
+    vSemaphoreDelete(s_mutex);
+    s_mutex = nullptr;
     s_task = nullptr;
     return false;
   }

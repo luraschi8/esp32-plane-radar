@@ -22,6 +22,8 @@ unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_render_ms = 0;
 /** Did the last painted frame contain traffic? Drives the one clearing redraw. */
 bool g_traffic_was_drawn = false;
+bool g_fetch_task_ok = false;
+unsigned long g_last_task_retry_ms = 0;
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -74,7 +76,7 @@ void setup() {
 
   // ADS-B runs on its own task from here: the fetch blocks for ~1.6 s, almost
   // all of it waiting on the socket, and loop() must keep rendering meanwhile.
-  services::adsb::startFetchTask();
+  g_fetch_task_ok = services::adsb::startFetchTask();
 }
 
 void loop() {
@@ -102,6 +104,13 @@ void loop() {
     }
   } else {
     g_wifi_down_since = 0;
+    // Task creation can fail under heap pressure right after the 115 KB sprite
+    // is allocated; without it nothing ever fetches, so keep retrying slowly.
+    if (!g_fetch_task_ok &&
+        millis() - g_last_task_retry_ms >= config::kFetchTaskRetryMs) {
+      g_last_task_retry_ms = millis();
+      g_fetch_task_ok = services::adsb::startFetchTask();
+    }
     if (!g_radar_visible) {
       showRadarIfConnected();
     } else if (millis() - g_last_render_ms >= config::kRenderIntervalMs) {

@@ -48,8 +48,15 @@ constexpr bool kDisplayRgbOrder = true;
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 
-/** Poll adsb.fi (API public limit: 1 req/s). */
+/**
+ * Pause between ADS-B fetches, applied *after* each one completes rather than
+ * as a fixed period. A fetch takes ~1.6 s, so the effective cycle is ~4.6 s.
+ * Kept as a gap (not a period) so the request rate can never creep toward the
+ * adsb.fi public limit of 1 req/s if fetches slow down.
+ */
 constexpr unsigned long kAdsbFetchIntervalMs = 3000;
+/** How often to retry starting the fetch task if it failed to start. */
+constexpr unsigned long kFetchTaskRetryMs = 10000;
 /**
  * Redraw interval while waiting for the next fetch. A frame costs ~44 ms, so
  * 100 ms is ~10 FPS at under half duty, leaving the loop free for the config
