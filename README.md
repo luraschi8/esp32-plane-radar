@@ -11,7 +11,7 @@ Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (
 1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
 2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
 
-After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~5 s).
+After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~3 s).
 
 ## Controls (BOOT, GPIO 9, active LOW)
 
@@ -86,7 +86,7 @@ As range decreases (or aircraft approach), targets move inward; beyond-ring dots
 
 - Source: `https://opendata.adsb.fi/api/v3/`
 - Fetch radius: `ui::radar::fetchRadiusKm()` — scales with the active preset to roughly the screen edge (so rim dots have data)
-- Poll interval: `kAdsbFetchIntervalMs` (5 s) in `config.h`
+- Poll interval: `kAdsbFetchIntervalMs` (3 s) in `config.h`; adsb.fi allows 1 req/s
 - Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
 
 ## Configuration
@@ -118,6 +118,7 @@ include/
   ui/
     radar_theme.h
     radar_range.h
+    radar_geo.h
     radar_display.h
     runway_overlay.h
     status_screens.h
@@ -157,6 +158,8 @@ src/
 pio run -t upload
 pio device monitor
 ```
+
+Full build / verify / flash procedure, including troubleshooting: **[OPS.md](OPS.md)**.
 
 - PlatformIO env: **`supermini`**
 - Serial: **115200** baud
