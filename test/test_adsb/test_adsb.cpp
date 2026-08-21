@@ -1,0 +1,277 @@
+// End-to-end exercise of the real adsb_client.cpp: URL building, the JSON
+// filter, field extraction and fallbacks, ground filtering, velocity
+// pre-computation, the double-buffer publish, staleness and expiry, the retry
+// cap, and every error path.
+#include <Arduino.h>
+#include <unity.h>
+#include <cmath>
+#include <cstring>
+
+#include "fixtures_adsb.h"
+#include "../mocks/mock_globals.h"
+#include "../../src/services/radar_location.cpp"
+#include "../../src/ui/radar_range.cpp"
+#include "../../src/ui/radar_geo.cpp"
+#include "../../src/services/adsb_client.cpp"
+
+using namespace services::adsb;
+
+static bool fetch(const char* payload, int code = HTTP_CODE_OK) {
+  g_http.reset();
+  g_http.body = payload ? payload : "";
+  g_http.code = code;
+  return fetchUpdate(40.445564, -3.698361, 30.0f);
+}
+
+void setUp() {
+  g_nvs.reset(); mockSetMs(100000); g_tls = MockTlsStats();
+  WiFi.status_ = WL_CONNECTED;
+  services::location::clear(); ui::radar::rangeInit();
+}
+void tearDown() {}
+
+// ---------- the JSON filter must not drop a field the parser reads ----------
+static void test_filter_covers_every_field_the_parser_reads() {
+  // These are the keys read by pickNoseHeading/pickTrackHeading/pickGroundSpeed/
+  // isOnGround/formatAltitudeTag/fillTagFields plus position, dst and seen_pos.
+  const char* consumed[] = {"lat","lon","true_heading","mag_heading","track","dir",
+                            "gs","tas","ias","alt_baro","alt_geom","flight","hex",
+                            "t","dst","seen_pos"};
+  for (const char* key : consumed) {
+    bool found = false;
+    for (const char* f : kWantedFields) if (strcmp(f, key) == 0) { found = true; break; }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "'%s' is read by the parser but missing from kWantedFields", key);
+    TEST_ASSERT_TRUE_MESSAGE(found, msg);
+  }
+}
+
+static void test_url_is_built_from_centre_and_radius() {
+  fetch(kAirbornePayload());
+  TEST_ASSERT_TRUE(strstr(g_http.last_url.c_str(), "/lat/40.445564") != nullptr);
+  TEST_ASSERT_TRUE(strstr(g_http.last_url.c_str(), "/lon/-3.698361") != nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(strstr(g_http.last_url.c_str(), "/dist/16.2") != nullptr,
+                           "radius must be converted km -> nautical miles");
+}
+
+// ---------- parsing real payloads ----------
+static void test_real_payload_parses_every_aircraft() {
+  TEST_ASSERT_TRUE(fetch(kAirbornePayload()));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(kAirborneCount, (int)aircraftCount(),
+                                "every airborne record should survive the filter");
+  const Aircraft* a = aircraftList();
+  for (size_t i = 0; i < aircraftCount(); ++i) {
+    TEST_ASSERT_TRUE_MESSAGE(a[i].lat != 0.0f, "position must be populated");
+    TEST_ASSERT_TRUE_MESSAGE(a[i].callsign[0] != '\0', "every target needs an identity");
+  }
+}
+
+static void test_real_ground_traffic_is_filtered_out() {
+  TEST_ASSERT_TRUE(fetch(kGroundMixPayload()));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(kGroundMixAirborne, (int)aircraftCount(),
+      "every alt_baro=\"ground\" record in this real capture must be hidden");
+}
+
+static void test_ground_targets_and_positionless_targets_are_dropped() {
+  TEST_ASSERT_TRUE(fetch(kTrickyPayload()));
+  // 5 in the payload: one on the ground, one with no lat/lon -> 3 remain.
+  TEST_ASSERT_EQUAL_INT(3, (int)aircraftCount());
+  const Aircraft* a = aircraftList();
+  for (size_t i = 0; i < aircraftCount(); ++i)
+    TEST_ASSERT_TRUE_MESSAGE(strncmp(a[i].callsign, "GND1", 4) != 0,
+                             "an aircraft reporting alt_baro=ground must be hidden");
+}
+
+static void test_callsign_is_trimmed_and_falls_back_to_hex() {
+  fetch(kTrickyPayload());
+  const Aircraft* a = aircraftList();
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("TEST123", a[0].callsign, "trailing pad spaces must go");
+  bool found_hex_fallback = false;
+  for (size_t i = 0; i < aircraftCount(); ++i)
+    if (strcmp(a[i].callsign, "nofl") == 0) found_hex_fallback = true;
+  TEST_ASSERT_TRUE_MESSAGE(found_hex_fallback, "no flight field -> hex is used as identity");
+}
+
+static void test_heading_and_speed_fallback_chains() {
+  fetch(kTrickyPayload());
+  const Aircraft* a = aircraftList();
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 91.0f, a[0].nose_deg);   // true_heading wins
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 90.0f, a[0].track_deg);  // track wins
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 300.0f, a[0].gs_knots);
+  for (size_t i = 0; i < aircraftCount(); ++i) {
+    if (strcmp(a[i].callsign, "nofl") != 0) continue;
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 45.0f, a[i].nose_deg, "falls back to mag_heading");
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 250.0f, a[i].gs_knots, "falls back to tas");
+  }
+}
+
+static void test_altitude_tag_formatting() {
+  fetch(kTrickyPayload());
+  const Aircraft* a = aircraftList();
+  TEST_ASSERT_EQUAL_STRING("2000 ft", a[0].alt);
+  for (size_t i = 0; i < aircraftCount(); ++i)
+    if (strcmp(a[i].callsign, "nofl") == 0)
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("5000 ft", a[i].alt, "alt_geom is the fallback");
+}
+
+static void test_missing_optional_fields_do_not_corrupt_the_record() {
+  fetch(kTrickyPayload());
+  const Aircraft* a = aircraftList();
+  for (size_t i = 0; i < aircraftCount(); ++i) {
+    if (strcmp(a[i].callsign, "minimal") != 0) continue;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", a[i].type, "absent type must be an empty string");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", a[i].alt, "absent altitude must be an empty string");
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, a[i].gs_knots);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 0.0f, a[i].pos_age_s, "absent seen_pos -> 0");
+  }
+}
+
+// ---------- dead reckoning inputs ----------
+static void test_velocity_is_resolved_at_fetch_time() {
+  fetch(kTrickyPayload());
+  const Aircraft* a = aircraftList();
+  // 300 kt due east (track 90) -> all easting, no northing.
+  const float kmps = 300.0f * 1.852f / 3600.0f;
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.001f, kmps, a[0].vel_e_km_s, "east component");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.001f, 0.0f, a[0].vel_n_km_s, "no north component");
+}
+
+static void test_seen_pos_is_captured_for_fix_age_anchoring() {
+  fetch(kTrickyPayload());
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 0.4f, aircraftList()[0].pos_age_s,
+      "without seen_pos, a stale repeated fix snaps the target backwards");
+}
+
+// ---------- staleness and expiry ----------
+static void test_age_is_clamped_to_the_horizon() {
+  fetch(kAirbornePayload());
+  mockAdvanceMs(60UL * 1000UL);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, kExtrapolationHorizonSec, secondsSinceUpdate());
+  TEST_ASSERT_TRUE_MESSAGE(secondsSinceUpdateRaw() > 50.0f, "the raw age must NOT be clamped");
+}
+
+static void test_data_expires_and_hides_traffic() {
+  fetch(kAirbornePayload());
+  TEST_ASSERT_TRUE(hasTraffic());
+  TEST_ASSERT_FALSE(dataExpired());
+  mockAdvanceMs(59UL * 1000UL);
+  TEST_ASSERT_FALSE_MESSAGE(dataExpired(), "still inside the 60 s window");
+  TEST_ASSERT_TRUE(hasTraffic());
+  mockAdvanceMs(2UL * 1000UL);
+  TEST_ASSERT_TRUE_MESSAGE(dataExpired(), "past 60 s with no fetch");
+  TEST_ASSERT_FALSE_MESSAGE(hasTraffic(),
+      "expired data must stop claiming traffic, or the panel shows dead aircraft as live");
+}
+
+static void test_a_successful_fetch_revives_expired_data() {
+  fetch(kAirbornePayload());
+  mockAdvanceMs(120UL * 1000UL);
+  TEST_ASSERT_TRUE(dataExpired());
+  fetch(kAirbornePayload());
+  TEST_ASSERT_FALSE(dataExpired());
+  TEST_ASSERT_TRUE(hasTraffic());
+}
+
+static void test_age_is_zero_before_the_first_fetch() {
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, secondsSinceUpdateRaw());
+  TEST_ASSERT_FALSE_MESSAGE(dataExpired(), "never-fetched is not the same as expired");
+}
+
+// ---------- error paths ----------
+static void test_http_error_does_not_publish_and_drops_the_session() {
+  fetch(kAirbornePayload());
+  const size_t before = aircraftCount();
+  TEST_ASSERT_FALSE(fetch(kAirbornePayload(), 429));
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)before, (int)aircraftCount(),
+      "a failed fetch must leave the previous list intact");
+  TEST_ASSERT_TRUE_MESSAGE(g_tls.stop > 0, "an error must drop the TLS session");
+}
+
+static void test_truncated_body_is_rejected_rather_than_half_parsed() {
+  std::string full = kAirbornePayload();
+  g_http.reset();
+  g_http.body = full.substr(0, full.size() / 2);   // cut mid-document
+  g_http.content_length_override = (int)full.size();
+  TEST_ASSERT_FALSE_MESSAGE(fetchUpdate(40.4, -3.6, 30.0f),
+      "a truncated document must fail, not publish partial traffic");
+}
+
+static void test_garbage_body_is_rejected() {
+  TEST_ASSERT_FALSE(fetch("not json at all"));
+}
+
+static void test_missing_ac_key_is_survivable() {
+  TEST_ASSERT_TRUE_MESSAGE(fetch("{\"msg\":\"No error\"}"),
+      "a response without an ac array must publish an empty sky, not fail");
+  TEST_ASSERT_EQUAL_INT(0, (int)aircraftCount());
+}
+
+static void test_empty_ac_array_publishes_zero_not_stale_traffic() {
+  fetch(kAirbornePayload());
+  TEST_ASSERT_TRUE(aircraftCount() > 0);
+  TEST_ASSERT_TRUE(fetch("{\"ac\":[]}"));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)aircraftCount(),
+      "an empty sky must publish zero so the clearing frame is drawn");
+}
+
+// The retry cap exists because ~118 handshakes in 10 s got the address throttled.
+static void test_retries_are_capped() {
+  g_http.reset();
+  g_http.body = kAirbornePayload();
+  g_http.fail_first_n_gets = 99;
+  fetchUpdate(40.4, -3.6, 30.0f);
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(3, g_http.get_calls,
+      "must not hammer an API documented at 1 req/s");
+}
+
+static void test_a_transient_failure_still_succeeds_within_the_cap() {
+  g_http.reset();
+  g_http.body = kAirbornePayload();
+  g_http.fail_first_n_gets = 2;      // two blips, then fine
+  TEST_ASSERT_TRUE(fetchUpdate(40.4, -3.6, 30.0f));
+  TEST_ASSERT_EQUAL_INT(3, g_http.get_calls);
+}
+
+// ---------- capacity ----------
+static void test_aircraft_cap_is_respected() {
+  std::string big = "{\"ac\":[";
+  for (int i = 0; i < (int)kMaxAircraft + 25; ++i) {
+    if (i) big += ",";
+    char b[192];
+    snprintf(b, sizeof(b), "{\"hex\":\"a%04d\",\"lat\":40.%03d,\"lon\":-3.6,\"gs\":200,\"track\":90}", i, i % 999);
+    big += b;
+  }
+  big += "]}";
+  TEST_ASSERT_TRUE(fetch(big.c_str()));
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)kMaxAircraft, (int)aircraftCount(),
+      "the fixed buffer must cap rather than overflow");
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  // Must run first: s_last_update_ms is file-static and no test can reset it.
+  RUN_TEST(test_age_is_zero_before_the_first_fetch);
+  RUN_TEST(test_filter_covers_every_field_the_parser_reads);
+  RUN_TEST(test_url_is_built_from_centre_and_radius);
+  RUN_TEST(test_real_payload_parses_every_aircraft);
+  RUN_TEST(test_real_ground_traffic_is_filtered_out);
+  RUN_TEST(test_ground_targets_and_positionless_targets_are_dropped);
+  RUN_TEST(test_callsign_is_trimmed_and_falls_back_to_hex);
+  RUN_TEST(test_heading_and_speed_fallback_chains);
+  RUN_TEST(test_altitude_tag_formatting);
+  RUN_TEST(test_missing_optional_fields_do_not_corrupt_the_record);
+  RUN_TEST(test_velocity_is_resolved_at_fetch_time);
+  RUN_TEST(test_seen_pos_is_captured_for_fix_age_anchoring);
+  RUN_TEST(test_age_is_clamped_to_the_horizon);
+  RUN_TEST(test_data_expires_and_hides_traffic);
+  RUN_TEST(test_a_successful_fetch_revives_expired_data);
+  RUN_TEST(test_http_error_does_not_publish_and_drops_the_session);
+  RUN_TEST(test_truncated_body_is_rejected_rather_than_half_parsed);
+  RUN_TEST(test_garbage_body_is_rejected);
+  RUN_TEST(test_empty_ac_array_publishes_zero_not_stale_traffic);
+  RUN_TEST(test_missing_ac_key_is_survivable);
+  RUN_TEST(test_retries_are_capped);
+  RUN_TEST(test_a_transient_failure_still_succeeds_within_the_cap);
+  RUN_TEST(test_aircraft_cap_is_respected);
+  return UNITY_END();
+}

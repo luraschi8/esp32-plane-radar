@@ -294,6 +294,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
+  // From here a socket/TLS session may exist, so a stop() is meaningful.
+  s_session_open = true;
 
   http.setTimeout(kRequestTimeoutMs);
   const int code = performGetWithRetry(http);

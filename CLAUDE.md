@@ -23,7 +23,10 @@ pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.b
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
+**Run `pio test -e native` before and after any change** — a host-side suite covering geometry, settings and
+persistence, the render state machine, and the whole ADS-B fetch/parse pipeline against real captured API
+payloads. `test/` is never compiled by `pio run`, so tests cost nothing in flash. Mocks live in `test/mocks/`;
+suites include the shipped `.cpp` directly so file-local logic is reachable. There is no linter or formatter. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
 RAM 16.8% (55012 B static), Flash 39.6% (1247186 B of 3 MB).

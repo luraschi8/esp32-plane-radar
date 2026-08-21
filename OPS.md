@@ -56,8 +56,25 @@ rm -rf .pio                       # nuclear: also re-downloads toolchain + libs
 
 ## 3. Verify
 
-There is **no automated test suite** — no unit tests, no host-side harness, no linter, no formatter.
-Verification is: it compiles cleanly, it fits, and it behaves on hardware. Do all three.
+There is a **host-side unit test suite** (section 3.0) plus the on-hardware checks below. There is still no
+linter or formatter. Verification is: tests pass, it compiles cleanly, it fits, and it behaves on hardware.
+
+### 3.0 Unit tests
+
+```bash
+pio test -e native                 # whole suite, runs on this machine in ~3 s
+pio test -e native -f test_geo     # one suite
+```
+
+These build for the **host**, not the device: `test/` is never compiled by `pio run`, so nothing here reaches
+the firmware image (verified by putting a `#error` in `test/` and watching `pio run -e supermini` still
+succeed). The shipped `.cpp` files are included directly and compiled against small mocks in `test/mocks/`
+(Arduino, Preferences/NVS, WiFi, HTTPClient, a scriptable TLS client, FreeRTOS), so the tests exercise real
+code rather than a reimplementation of it.
+
+Fixtures in `test/fixtures_*.h` are **real adsb.fi responses** captured from the device's own location; the
+geometry suite checks our projection against the API's own `dst`/`dir` fields, which are independent ground
+truth.
 
 ### 3.1 Compiles cleanly
 

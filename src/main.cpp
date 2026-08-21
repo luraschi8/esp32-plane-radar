@@ -11,6 +11,7 @@
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
 #include "ui/radar_display.h"
+#include "ui/render_policy.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 
@@ -20,11 +21,8 @@ bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_render_ms = 0;
-/** Did the last painted frame contain traffic? Drives the one clearing redraw. */
-bool g_traffic_was_drawn = false;
+ui::RenderPolicy g_render;
 bool g_fetch_task_ok = false;
-/** A draw was declined (aircraft list locked); loop() must try again. */
-bool g_needs_redraw = false;
 unsigned long g_last_task_retry_ms = 0;
 
 void showRadarIfConnected() {
@@ -36,14 +34,11 @@ void showRadarIfConnected() {
   // that window would otherwise latch "no traffic" for a frame that is showing
   // some -- stranding those symbols on an idle screen.
   const bool traffic = services::adsb::hasTraffic();
-  // Only record the radar as shown if the frame really reached the panel;
-  // otherwise loop() retries and we never latch over a status screen.
-  if (!ui::radarDisplayDraw()) {
-    g_needs_redraw = true;
-    return;
+  const bool blitted = ui::radarDisplayDraw();
+  g_render.onFrameDrawn(traffic, blitted);
+  if (!blitted) {
+    return;  // loop() retries; never latch over a status screen
   }
-  g_traffic_was_drawn = traffic;
-  g_needs_redraw = false;
   g_radar_visible = true;
 }
 
@@ -55,16 +50,10 @@ void onRangeTap() {
                 ui::radar::rangeCurrent().outer_km);
 
   if (g_radar_visible && WiFi.status() == WL_CONNECTED) {
+    // Sample before drawing; a declined draw leaves needs_redraw set so the
+    // rings and scale label cannot be stranded on the previous preset.
     const bool traffic = services::adsb::hasTraffic();
-    if (ui::radarDisplayDraw()) {
-      g_traffic_was_drawn = traffic;
-      g_needs_redraw = false;
-    } else {
-      // Without this the preset has already advanced but the rings and scale
-      // label keep showing the old range, with nothing scheduled to repaint
-      // them -- the button reads as dead.
-      g_needs_redraw = true;
-    }
+    g_render.onFrameDrawn(traffic, ui::radarDisplayDraw());
   }
 }
 
@@ -114,6 +103,7 @@ void loop() {
     if (g_radar_visible) {
       Serial.println("WiFi lost — will reconnect");
       g_radar_visible = false;
+      g_render.reset();
     }
 
     if (g_wifi_down_since == 0) {
@@ -152,16 +142,11 @@ void loop() {
       // but the frame *after* the last aircraft leaves must still be drawn,
       // or its symbol and tag stay burned on the panel until the next redraw.
       const bool traffic = services::adsb::hasTraffic();
-      if (traffic || g_traffic_was_drawn || g_needs_redraw) {
+      if (g_render.shouldRender(traffic)) {
         g_last_render_ms = millis();
-        // Latch only on a real blit: otherwise a skipped clearing frame would
-        // be recorded as painted and the last targets would stay on screen.
-        if (ui::radarDisplayRefreshAircraft()) {
-          g_traffic_was_drawn = traffic;
-          g_needs_redraw = false;
-        } else {
-          g_needs_redraw = true;
-        }
+        // The policy latches only on a real blit: a skipped clearing frame
+        // recorded as painted would leave the last targets on screen.
+        g_render.onFrameDrawn(traffic, ui::radarDisplayRefreshAircraft());
       }
     }
   }
