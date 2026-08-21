@@ -23,6 +23,8 @@ unsigned long g_last_render_ms = 0;
 /** Did the last painted frame contain traffic? Drives the one clearing redraw. */
 bool g_traffic_was_drawn = false;
 bool g_fetch_task_ok = false;
+/** A draw was declined (aircraft list locked); loop() must try again. */
+bool g_needs_redraw = false;
 unsigned long g_last_task_retry_ms = 0;
 
 void showRadarIfConnected() {
@@ -30,12 +32,18 @@ void showRadarIfConnected() {
     g_radar_visible = false;
     return;
   }
+  // Sample before the blit: pushSprite takes ~11.5 ms, and a publish landing in
+  // that window would otherwise latch "no traffic" for a frame that is showing
+  // some -- stranding those symbols on an idle screen.
+  const bool traffic = services::adsb::hasTraffic();
   // Only record the radar as shown if the frame really reached the panel;
   // otherwise loop() retries and we never latch over a status screen.
   if (!ui::radarDisplayDraw()) {
+    g_needs_redraw = true;
     return;
   }
-  g_traffic_was_drawn = services::adsb::hasTraffic();
+  g_traffic_was_drawn = traffic;
+  g_needs_redraw = false;
   g_radar_visible = true;
 }
 
@@ -46,9 +54,17 @@ void onRangeTap() {
   Serial.printf("Range: %s (outer ~%.0f km)\n", range_label,
                 ui::radar::rangeCurrent().outer_km);
 
-  if (g_radar_visible && WiFi.status() == WL_CONNECTED &&
-      ui::radarDisplayDraw()) {
-    g_traffic_was_drawn = services::adsb::hasTraffic();
+  if (g_radar_visible && WiFi.status() == WL_CONNECTED) {
+    const bool traffic = services::adsb::hasTraffic();
+    if (ui::radarDisplayDraw()) {
+      g_traffic_was_drawn = traffic;
+      g_needs_redraw = false;
+    } else {
+      // Without this the preset has already advanced but the rings and scale
+      // label keep showing the old range, with nothing scheduled to repaint
+      // them -- the button reads as dead.
+      g_needs_redraw = true;
+    }
   }
 }
 
@@ -130,12 +146,15 @@ void loop() {
       // but the frame *after* the last aircraft leaves must still be drawn,
       // or its symbol and tag stay burned on the panel until the next redraw.
       const bool traffic = services::adsb::hasTraffic();
-      if (traffic || g_traffic_was_drawn) {
+      if (traffic || g_traffic_was_drawn || g_needs_redraw) {
         g_last_render_ms = millis();
         // Latch only on a real blit: otherwise a skipped clearing frame would
         // be recorded as painted and the last targets would stay on screen.
         if (ui::radarDisplayRefreshAircraft()) {
           g_traffic_was_drawn = traffic;
+          g_needs_redraw = false;
+        } else {
+          g_needs_redraw = true;
         }
       }
     }

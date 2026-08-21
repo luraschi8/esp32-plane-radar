@@ -474,12 +474,6 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
   }
 }
 
-/**
- * Total dead-reckoning horizon. A position can arrive already tens of seconds
- * stale, so this has to cap seen_pos + our own age, not just our own age.
- */
-constexpr float kMaxExtrapolationSec = 12.0f;
-
 /** Skip the traffic layer rather than stall the frame if the fetch task holds the lock. */
 constexpr uint32_t kAircraftLockWaitMs = 20;
 
@@ -520,14 +514,16 @@ bool drawAircraft() {
     // Positions arrive stale by their own seen_pos, so advance from when the
     // fix was taken. This also makes a repeated stale position continuous
     // instead of snapping the target backwards.
-    // Dim once the *true* age of the fix reaches the horizon, whether that is
-    // because the fix arrived stale or because our own feed stalled. The drawn
-    // position still uses the clamped age so the symbol never jumps backwards
-    // at the moment it goes stale -- the dimming is the honesty signal.
-    const bool stale =
-        (planes[i].pos_age_s + fetch_age_raw) >= kMaxExtrapolationSec;
-    const float age_s =
-        std::min(planes[i].pos_age_s + fetch_age_s, kMaxExtrapolationSec);
+    // Dim on either cause of staleness, tested separately rather than on the
+    // sum: pos_age_s is constant for a whole fetch cycle and fetch_age_raw only
+    // crosses the horizon when the feed actually stalls, so neither term can
+    // oscillate. Summing them made any target whose fix age sat within one
+    // cycle of the horizon blink once per fetch. The drawn position still uses
+    // the clamped sum, so the symbol never jumps when the colour changes.
+    const bool stale = planes[i].pos_age_s >= services::adsb::kExtrapolationHorizonSec ||
+                       fetch_age_raw >= services::adsb::kExtrapolationHorizonSec;
+    const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
+                                 services::adsb::kExtrapolationHorizonSec);
     dx_km += planes[i].vel_e_km_s * age_s;
     dy_km += planes[i].vel_n_km_s * age_s;
     dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);

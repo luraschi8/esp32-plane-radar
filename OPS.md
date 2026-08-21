@@ -75,7 +75,7 @@ The size report at the end of every build is the memory budget. Current baseline
 
 ```
 RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
-Flash: [====      ]  39.6% (used 1246880 bytes from 3145728 bytes)
+Flash: [====      ]  39.6% (used 1247066 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite

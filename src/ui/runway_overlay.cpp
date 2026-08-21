@@ -15,8 +15,9 @@
 namespace ui::runway {
 namespace {
 
-/** Measured worst case anywhere in the dataset is 3 airports / 12 strips
- * inside the widest preset's 36.8 km fetch disc; these are ~2.5x that. */
+/** Exhaustive search over the dataset (every airport plus every pairwise circle
+ * intersection as a candidate centre) gives a worst case of 4 airports (Moscow)
+ * and 12 strips (KORD+KMDW) inside the widest preset's 36.8 km disc. */
 constexpr size_t kMaxAirportLabels = 12;
 
 bool s_runway_label_ready = false;

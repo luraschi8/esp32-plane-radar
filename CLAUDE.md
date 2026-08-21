@@ -26,7 +26,7 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.6% (1246880 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.6% (1247066 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
@@ -71,7 +71,7 @@ after anything that deepens the fetch call path, since mbedTLS depth varies with
 `radarDisplayDraw()` and `radarDisplayRefreshAircraft()` both call `renderFrame()`, which composites the *whole*
 frame (background, rings, crosshairs, runway overlay, center dot, labels, aircraft) into an off-screen
 `LGFX_Sprite` and blits it in a single `pushSprite` — this is what kills flicker. Pixels are never cached
-between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~35-42 KB free), but the runway
+between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~31 KB free, in a 9.2 KB largest block), but the runway
 overlay caches its *screen-space geometry* in `runway_overlay.cpp` and rebuilds only when the range preset or
 radar centre moves. Measured frame budget: **43.8 ms total (23 FPS ceiling)** = grid 10.5 + aircraft 21.5 + an
 11.6 ms `pushSprite` (43.6 ms of accounted phases; 43.8 ms measured end to end), the last being a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms
@@ -128,10 +128,16 @@ portal survived the blocking fetch; that hook is gone — the fetch runs on its 
 ## Non-negotiable: speed and memory come first
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
-sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap is **~68 KB idle**, and `getMinFreeHeap()` bottoms at **12,340 B** — that low-water mark
-is the real budget. mbedTLS holds ~32 KB (including one 16 KB contiguous block) for the reused session; the
-fetch task's 8 KB stack and the second aircraft buffer come out of the same pool. Largest contiguous block
-observed at fetch time: 34-37 KB. Every review and every change
+sprite alone takes 115 KB and mbedTLS permanently holds ~33 KB for the reused TLS session. Measured with the TLS session held: free heap at the start of a request is **30,856 B — bit-identical across
+38 consecutive fetches**, and the **largest contiguous block is 9,204 B**. A fetch transiently consumes ~6 KB
+(the filtered JSON document, in 4 KB pool chunks) and returns it. mbedTLS permanently holds ~33 KB as *two*
+~16.4 KB blocks plus a ~2.5 KB context; the frame sprite holds 115 KB; the fetch task's 8 KB stack and the
+second aircraft buffer come out of the same pool.
+
+**That 9,204 B largest block is the number to design against.** Nothing may request a larger contiguous
+allocation at runtime. It is also why the fetch task releases the TLS session (`s_client.stop()`) the moment
+the link drops: those ~33 KB must be back in the pool before WiFi restarts, or the reconnect itself can fail
+for want of memory. Every review and every change
 must be judged against that budget, not against what would be reasonable on a desktop.
 
 Concretely, when writing or reviewing code here:

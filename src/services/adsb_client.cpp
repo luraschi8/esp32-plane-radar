@@ -41,8 +41,6 @@ unsigned long s_last_update_ms = 0;
 /** Big enough for the mbedTLS handshake; high-water mark checked on device. */
 constexpr uint32_t kFetchTaskStackBytes = 8192;
 
-/** Dead reckoning past this is guesswork, so positions freeze instead. */
-constexpr float kMaxExtrapolationSec = 12.0f;
 /** Past this with no successful fetch, drop the picture rather than lie. */
 constexpr float kDataExpirySec = 60.0f;
 constexpr float kDegToRad = 0.01745329252f;
@@ -245,7 +243,9 @@ namespace {
  */
 /**
  * The TLS client is kept alive between fetches instead of being a function
- * local. mbedTLS wants ~32 KB, including one 16 KB *contiguous* block, and
+ * local. mbedTLS wants ~33 KB as *two* ~16.4 KB contiguous blocks (in and out content
+ * buffers; MBEDTLS_ASYMMETRIC_CONTENT_LEN is not set in this SDK) plus a ~2.5 KB
+ * context, and
  * measured min-free heap on this device is ~12 KB: finding that block again
  * on every cycle in a heap the WiFi stack has already fragmented is what produced
  * intermittent "SSL - Memory allocation failed" storms. Claiming it once, and
@@ -364,13 +364,25 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 }
 
 void fetchTask(void*) {
+  bool was_connected = false;
   for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
+    const bool link_up = WiFi.status() == WL_CONNECTED;
+    if (link_up) {
       double lat = 0.0;
       double lon = 0.0;
       services::location::snapshot(&lat, &lon);
       fetchUpdate(lat, lon, ui::radar::fetchRadiusKm());
+    } else if (was_connected) {
+      // The session is only torn down on a *request* error, and the link
+      // almost always drops between requests (a fetch is ~0.5 s of a ~3.5 s
+      // cycle). Left alone, ~33 KB of dead mbedTLS state stays pinned through
+      // the WiFi stop/start cycles that need that heap to reconnect -- against
+      // a ~12 KB min-free heap that can strand the device offline for good.
+      // The old function-local client got this free from its destructor.
+      s_client.stop();
+      Serial.println("adsb: link down, TLS session released");
     }
+    was_connected = link_up;
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
 }
@@ -417,7 +429,7 @@ float secondsSinceUpdateRaw() {
 
 float secondsSinceUpdate() {
   const float age_s = secondsSinceUpdateRaw();
-  return age_s > kMaxExtrapolationSec ? kMaxExtrapolationSec : age_s;
+  return age_s > kExtrapolationHorizonSec ? kExtrapolationHorizonSec : age_s;
 }
 
 bool dataExpired() {

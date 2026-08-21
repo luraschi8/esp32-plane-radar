@@ -57,6 +57,12 @@ unsigned fetchTaskStackFree();
 bool hasTraffic();
 
 /**
+ * Dead-reckoning horizon. Shared so the drawn position (clamped to it) and the
+ * stale flag (tested against it) can never be judged by different numbers.
+ */
+constexpr float kExtrapolationHorizonSec = 12.0f;
+
+/**
  * Seconds since the last successful fetch, clamped so a run of failures cannot
  * extrapolate an aircraft into fiction. 0 before the first fetch.
  */
