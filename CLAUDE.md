@@ -26,7 +26,7 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.7% (54716 B static), Flash 39.6% (1247020 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.6% (1246880 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
@@ -58,7 +58,7 @@ loss, and redraws every `kRenderIntervalMs`.
 on the socket — and that froze the render loop for half of every cycle. The `WiFiClientSecure`/`HTTPClient`
 pair is **file-scope and reused**: mbedTLS needs one 16 KB contiguous block, and re-finding it every cycle in a
 fragmented heap caused intermittent `SSL - Memory allocation failed` storms. Reusing the connection also
-dropped the cycle from ~5.0 s to ~3.5 s by skipping the handshake. Any error path calls `s_client.stop()` so
+dropped the cycle from ~4.6 s to ~3.5 s by skipping the handshake. Any error path calls `s_client.stop()` so
 the next attempt renegotiates. The task parses into a back
 buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` and *skips the
 traffic layer* rather than stalling if it can't get it. Never call `wifiLoop()` / WiFiManager `process()` from
@@ -74,7 +74,7 @@ frame (background, rings, crosshairs, runway overlay, center dot, labels, aircra
 between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~35-42 KB free), but the runway
 overlay caches its *screen-space geometry* in `runway_overlay.cpp` and rebuilds only when the range preset or
 radar centre moves. Measured frame budget: **43.8 ms total (23 FPS ceiling)** = grid 10.5 + aircraft 21.5 + an
-11.6 ms `pushSprite`, the last being a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms
+11.6 ms `pushSprite` (43.6 ms of accounted phases; 43.8 ms measured end to end), the last being a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms
 theoretical). Rendering runs at `kRenderIntervalMs` (100 ms) independently of the ~3.5 s fetch cycle. The
 sprite is 240×240×16bpp ≈ **115 KB**, on a
 chip with ~320 KB heap, so any new large allocation must be checked against that. `ensureFrameSprite()` failing
@@ -96,8 +96,8 @@ All lat/lon → pixel math lives in **one** place: `offsetKmFromCenter`, `pxPerK
 
 Equirectangular projection about the configured centre, north = screen up: `dy_km = Δlat × 111`,
 `dx_km = Δlon × 111 × cos(centre lat)`. The `cos` factor is **required** — without it everything east–west is
-stretched by `1/cos(lat)` (≈1.64× at 52°N). It is cached and recomputed only when the centre moves, since the
-runway pass calls it ~1700×/frame and the C3 has no hardware FPU.
+stretched by `1/cos(lat)` (≈1.64× at 52°N). It is cached and recomputed only when the centre moves: the C3 has no hardware
+FPU, and the runway cache rebuild calls it once per airport across the whole dataset.
 
 Range presets label **ring 3 = ¾ of the outer radius**, so `outer_km = ring3_km × 4/3` (`radar_range.h`).
 `fetchRadiusKm()` scales the outer range up to the screen edge (107 px grid vs 118 px rim) so aircraft outside
@@ -128,9 +128,10 @@ portal survived the blocking fetch; that hook is gone — the fetch runs on its 
 ## Non-negotiable: speed and memory come first
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
-sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap is **~71 KB idle** and bottoms at **~20 KB during a fetch**, because mbedTLS allocates
-and frees ~32 KB (including one 16 KB contiguous block) on every request. Largest contiguous block observed:
-9-35 KB. The fetch task's 8 KB stack and the second aircraft buffer come out of that same budget. Every review and every change
+sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap is **~68 KB idle**, and `getMinFreeHeap()` bottoms at **12,340 B** — that low-water mark
+is the real budget. mbedTLS holds ~32 KB (including one 16 KB contiguous block) for the reused session; the
+fetch task's 8 KB stack and the second aircraft buffer come out of the same pool. Largest contiguous block
+observed at fetch time: 34-37 KB. Every review and every change
 must be judged against that budget, not against what would be reasonable on a desktop.
 
 Concretely, when writing or reviewing code here:
@@ -145,9 +146,10 @@ Concretely, when writing or reviewing code here:
   torn rows or colour corruption ⇒ drop to 40 MHz in `include/config.h` first.
 - **No heap in the draw path.** Aircraft live in a static `Aircraft[64]`; the airport dataset is
   `const` in flash; the frame sprite is allocated once and reused. Keep it that way.
-- **Watch per-frame cost.** `renderFrame()` walks all 1,706 runway segments every redraw, and the
-  runway pass calls the projection ~1,700x. Cache anything trigonometric that does not change per
-  call -- `radar_geo.cpp` caches `cos(centre latitude)` for this reason.
+- **Watch per-frame cost.** The runway pass *used to* walk all 1,706 segments every redraw (~34 ms);
+  it now draws at most 32 cached screen-space segments and only re-scans the dataset when the range
+  preset or radar centre moves. Cache anything trigonometric that does not change per call --
+  `radar_geo.cpp` caches `cos(centre latitude)` for the same reason.
 - **Check return values of allocating calls.** `String::concat`, `reserve`, and `createSprite` all
   fail silently by returning false; ignoring that turns an allocation failure into a hang or corruption.
 - **Measure, don't estimate.** ArduinoJson is header-only and compiles on the host: a tracking

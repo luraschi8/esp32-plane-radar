@@ -74,8 +74,8 @@ pio run -e supermini -t clean && pio run -e supermini 2>&1 \
 The size report at the end of every build is the memory budget. Current baseline:
 
 ```
-RAM:   [==        ]  16.7% (used 54716 bytes from 327680 bytes)
-Flash: [====      ]  39.6% (used 1247020 bytes from 3145728 bytes)
+RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
+Flash: [====      ]  39.6% (used 1246880 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite
@@ -165,8 +165,9 @@ Prebuilt images are on the [Releases page](https://github.com/MatixYo/ESP32-Plan
 
 ### 4.4 Erase flash
 
-Wipes the app *and* all NVS (Wi-Fi credentials, location, range, units). A 3-second BOOT hold does the
-same thing from the app and is usually what you want instead.
+Wipes the app *and* all NVS — Wi-Fi credentials, location, range preset, units and the runway toggle.
+Note a 3-second BOOT hold is **not** equivalent: it clears credentials, location, units and the runway
+toggle, but the saved range preset survives.
 
 ```bash
 pio run -e supermini -t erase

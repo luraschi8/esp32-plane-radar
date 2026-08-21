@@ -36,7 +36,7 @@ size_t aircraftCount();
 const Aircraft* aircraftList();
 
 /**
- * Start the background fetch task. The fetch blocks for ~1.6 s (mostly waiting
+ * Start the background fetch task. The fetch blocks (mostly waiting
  * on the network), which froze the render loop when it ran inline; on its own
  * task it yields while blocked and the display keeps animating.
  */

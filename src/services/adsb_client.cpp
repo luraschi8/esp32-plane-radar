@@ -247,7 +247,7 @@ namespace {
  * The TLS client is kept alive between fetches instead of being a function
  * local. mbedTLS wants ~32 KB, including one 16 KB *contiguous* block, and
  * measured min-free heap on this device is ~12 KB: finding that block again
- * every 4.6 s in a heap the WiFi stack has already fragmented is what produced
+ * on every cycle in a heap the WiFi stack has already fragmented is what produced
  * intermittent "SSL - Memory allocation failed" storms. Claiming it once, and
  * reusing the connection the server already offers via keep-alive, removes the
  * repeated large allocation entirely.

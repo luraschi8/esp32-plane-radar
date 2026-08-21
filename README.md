@@ -18,7 +18,7 @@ After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its o
 | Action | Effect |
 |--------|--------|
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 20 → 25 km); saved to flash |
-| **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
+| **Hold 3 s** | Clear Wi‑Fi, location, units and the runway toggle; reboot into setup portal. The range preset is **not** cleared |
 
 Hold BOOT for 3 s **while the device is running** to reset. Holding BOOT at power-on does *not* reset credentials — GPIO 9 low at reset puts the ESP32-C3 into ROM download mode instead.
 

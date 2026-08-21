@@ -500,7 +500,7 @@ bool drawAircraft() {
   size_t dot_count = 0;
 
   // Dead reckoning: advance each target along its own ground velocity since the
-  // last fetch, so the picture moves between the (~4.6 s) network updates.
+  // last fetch, so the picture moves between the (~3.5 s) network updates.
   const float fetch_age_s = services::adsb::secondsSinceUpdate();
   // Unclamped, so a stalled feed is detectable: the clamped value pins at the
   // horizon and would make dead data look as fresh as live data forever.

@@ -79,8 +79,8 @@ void setup() {
     showRadarIfConnected();
   }
 
-  // ADS-B runs on its own task from here: the fetch blocks for ~1.6 s, almost
-  // all of it waiting on the socket, and loop() must keep rendering meanwhile.
+  // ADS-B runs on its own task from here: the fetch blocks, almost all of it
+  // waiting on the socket, and loop() must keep rendering meanwhile.
   g_fetch_task_ok = services::adsb::startFetchTask();
 }
 
@@ -117,7 +117,13 @@ void loop() {
       g_fetch_task_ok = services::adsb::startFetchTask();
     }
     if (!g_radar_visible) {
-      showRadarIfConnected();
+      // Rate-limited like any other frame: showRadarIfConnected() can decline
+      // to latch (aircraft list locked), and retrying a ~44 ms composite every
+      // 10 ms would starve the loop for as long as that lasted.
+      if (millis() - g_last_render_ms >= config::kRenderIntervalMs) {
+        g_last_render_ms = millis();
+        showRadarIfConnected();
+      }
     } else if (millis() - g_last_render_ms >= config::kRenderIntervalMs) {
       // Fetching happens on its own task; loop() just animates the last list
       // forward by dead reckoning. Idle when there is nothing to animate --
