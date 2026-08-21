@@ -11,7 +11,7 @@ Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (
 1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
 2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
 
-After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its own task with a ~4.6 s cycle, while the display re-renders at ~10 fps in between.
+After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its own task with a ~3.5 s cycle (the HTTPS connection is kept alive between requests), while the display re-renders at ~10 fps in between.
 
 ## Controls (BOOT, GPIO 9, active LOW)
 
@@ -20,7 +20,7 @@ After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its o
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 20 → 25 km); saved to flash |
 | **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
 
-During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
+Hold BOOT for 3 s **while the device is running** to reset. Holding BOOT at power-on does *not* reset credentials — GPIO 9 low at reset puts the ESP32-C3 into ROM download mode instead.
 
 ## Wi‑Fi setup portal
 
@@ -71,7 +71,7 @@ Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
 ### Runways
 
-- Major airports from OurAirports (`large_airport`); all open runway strips in range (helipads excluded)
+- Major airports from OurAirports (`large_airport`); open runway strips in range (helipads excluded), capped at 32 strips and 12 airport labels — roughly 2.5× the worst case anywhere in the dataset
 - Teal runway lines with one ICAO label per airport (e.g. `KJFK`); toggle in the Wi‑Fi setup portal
 - Update the embedded list: `python3 scripts/build_large_airports.py`
 
@@ -79,7 +79,8 @@ Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
 - **Inside the outer ring** — red heading triangle, magenta speed vector (clipped at the ring), callsign / type / altitude tags
 - **Outside the ring** (still within ADS-B fetch) — small **red dot on the screen rim** at the correct bearing (direction cue; not distance-accurate past the ring)
-- **Tags** — placed toward the **center**: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
+- **Tags** — placed toward the **center**: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**. Tags never overlap: each tries six slots (preferred side, opposite side, ±one text line) and is **omitted** if none is free, nearest aircraft winning
+- **Dimmed symbols** — a contact whose position is older than 12 s (stale ADS-B fix, or a stalled feed) is drawn in dark red; after 60 s with no successful fetch the traffic layer is cleared entirely
 
 As range decreases (or aircraft approach), targets move inward; beyond-ring dots become full symbols when they cross the outer ring.
 
@@ -87,7 +88,7 @@ As range decreases (or aircraft approach), targets move inward; beyond-ring dots
 
 - Source: `https://opendata.adsb.fi/api/v3/`
 - Fetch radius: `ui::radar::fetchRadiusKm()` — scales with the active preset to roughly the screen edge (so rim dots have data)
-- Poll gap: `kAdsbFetchIntervalMs` (3 s) *after* each fetch completes; a fetch takes ~1.6 s, so the effective cycle is ~4.6 s (adsb.fi allows 1 req/s)
+- Poll gap: `kAdsbFetchIntervalMs` (3 s) *after* each fetch completes; with the TLS session reused a fetch takes ~0.5 s, so the effective cycle is ~3.5 s (adsb.fi allows 1 req/s)
 - Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
 
 ## Configuration

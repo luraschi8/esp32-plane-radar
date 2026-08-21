@@ -51,6 +51,8 @@ bool s_tag_use_vlw = false;
 lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
+unsigned long s_frame_failed_ms = 0;
+constexpr unsigned long kSpriteRetryMs = 5000;
 
 class DrawScope {
  public:
@@ -225,9 +227,8 @@ bool beyondRingEdgeDotFromKm(float dx_km, float dy_km, float dist_km, int* out_x
   return true;
 }
 
-void drawBeyondRingDot(int x, int y) {
-  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx,
-                           radar::kColorAircraft);
+void drawBeyondRingDot(int x, int y, uint16_t color) {
+  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx, color);
 }
 
 int speedLineLengthPx(float gs_knots) {
@@ -249,22 +250,17 @@ int speedLineLengthPx(float gs_knots) {
   return len;
 }
 
-void noseTip(int cx, int cy, float heading_deg, int* tip_x, int* tip_y) {
-  constexpr float kDegToRad = 0.01745329252f;
-  const float rad = heading_deg * kDegToRad;
-  *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * radar::kAircraftNoseLenPx));
-  *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * radar::kAircraftNoseLenPx));
+/** Takes the heading already resolved into sin/cos: no FPU, so trig is dear. */
+void noseTip(int cx, int cy, float sin_h, float cos_h, int* tip_x, int* tip_y) {
+  *tip_x = cx + static_cast<int>(lroundf(sin_h * radar::kAircraftNoseLenPx));
+  *tip_y = cy - static_cast<int>(lroundf(cos_h * radar::kAircraftNoseLenPx));
 }
 
-void drawHeadingTriangle(int cx, int cy, float heading_deg, uint16_t color) {
-  constexpr float kDegToRad = 0.01745329252f;
-  const float rad = heading_deg * kDegToRad;
-  const float sin_h = sinf(rad);
-  const float cos_h = cosf(rad);
-
+void drawHeadingTriangle(int cx, int cy, float sin_h, float cos_h,
+                         uint16_t color) {
   int tip_x = 0;
   int tip_y = 0;
-  noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
+  noseTip(cx, cy, sin_h, cos_h, &tip_x, &tip_y);
 
   const int base_x =
       cx - static_cast<int>(lroundf(sin_h * static_cast<float>(radar::kAircraftTailLenPx)));
@@ -278,7 +274,7 @@ void drawHeadingTriangle(int cx, int cy, float heading_deg, uint16_t color) {
                        base_x - wing_x, base_y - wing_y, color);
 }
 
-void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
+void drawSpeedVector(int cx, int cy, float sin_h, float cos_h, float track_deg,
                      float gs_knots, uint16_t color) {
   const int len = speedLineLengthPx(gs_knots);
   if (len <= 0) {
@@ -287,7 +283,7 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
 
   int tip_x = 0;
   int tip_y = 0;
-  noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
+  noseTip(cx, cy, sin_h, cos_h, &tip_x, &tip_y);
 
   constexpr float kDegToRad = 0.01745329252f;
   const float rad = track_deg * kDegToRad;
@@ -451,6 +447,7 @@ struct BeyondDotDrawItem {
   int x = 0;
   int y = 0;
   int dist_sq = 0;
+  bool stale = false;
 };
 
 void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
@@ -503,25 +500,34 @@ bool drawAircraft() {
   size_t dot_count = 0;
 
   // Dead reckoning: advance each target along its own ground velocity since the
-  // last fetch, so the picture moves between the (~3 s) network updates.
+  // last fetch, so the picture moves between the (~4.6 s) network updates.
   const float fetch_age_s = services::adsb::secondsSinceUpdate();
+  // Unclamped, so a stalled feed is detectable: the clamped value pins at the
+  // horizon and would make dead data look as fresh as live data forever.
+  const float fetch_age_raw = services::adsb::secondsSinceUpdateRaw();
+
+  if (services::adsb::dataExpired()) {
+    services::adsb::aircraftUnlock();
+    return true;  // grid only: the list is too old to show
+  }
 
   for (size_t i = 0; i < n; ++i) {
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
-    radar::offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    radar::offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km,
+                              nullptr);  // dist recomputed after dead reckoning
     // Positions arrive stale by their own seen_pos, so advance from when the
     // fix was taken. This also makes a repeated stale position continuous
     // instead of snapping the target backwards.
-    // If the fix itself is already older than the horizon, extrapolating it
-    // would pin the target at the cap: drawn a fixed distance ahead of a fix of
-    // unknown age and then perfectly still. Show the reported position instead
-    // and dim it, so it reads as stale rather than as confidently wrong.
-    const bool stale = planes[i].pos_age_s >= kMaxExtrapolationSec;
+    // Dim once the *true* age of the fix reaches the horizon, whether that is
+    // because the fix arrived stale or because our own feed stalled. The drawn
+    // position still uses the clamped age so the symbol never jumps backwards
+    // at the moment it goes stale -- the dimming is the honesty signal.
+    const bool stale =
+        (planes[i].pos_age_s + fetch_age_raw) >= kMaxExtrapolationSec;
     const float age_s =
-        stale ? 0.0f
-              : std::min(planes[i].pos_age_s + fetch_age_s, kMaxExtrapolationSec);
+        std::min(planes[i].pos_age_s + fetch_age_s, kMaxExtrapolationSec);
     dx_km += planes[i].vel_e_km_s * age_s;
     dy_km += planes[i].vel_n_km_s * age_s;
     dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);
@@ -547,12 +553,15 @@ bool drawAircraft() {
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
     dots[dot_count].dist_sq = radar::distSqFromCenter(dot_x, dot_y);
+    dots[dot_count].stale = stale;
     ++dot_count;
   }
 
   sortBeyondDotsFarFirst(dots, dot_count);
   for (size_t d = 0; d < dot_count; ++d) {
-    drawBeyondRingDot(dots[d].x, dots[d].y);
+    drawBeyondRingDot(dots[d].x, dots[d].y,
+                      dots[d].stale ? radar::kColorAircraftStale
+                                    : radar::kColorAircraft);
   }
 
   sortDrawItemsFarFirst(items, draw_count);
@@ -560,9 +569,16 @@ bool drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
-    drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
+    // Resolve the nose heading once and share it: drawHeadingTriangle and
+    // drawSpeedVector both need it, and noseTip() used to recompute it again
+    // inside each of them -- 8 soft-float trig calls per aircraft per frame.
+    constexpr float kDegToRad = 0.01745329252f;
+    const float nose_rad = planes[i].nose_deg * kDegToRad;
+    const float sin_h = sinf(nose_rad);
+    const float cos_h = cosf(nose_rad);
+    drawSpeedVector(x, y, sin_h, cos_h, planes[i].track_deg,
                     planes[i].gs_knots, radar::kColorTrackVector);
-    drawHeadingTriangle(x, y, planes[i].nose_deg,
+    drawHeadingTriangle(x, y, sin_h, cos_h,
                         items[d].stale ? radar::kColorAircraftStale
                                        : radar::kColorAircraft);
   }
@@ -704,11 +720,19 @@ bool ensureFrameSprite() {
   if (s_frame_ready) {
     return true;
   }
+  // The render loop runs at ~10 fps; retrying a 115 KB contiguous allocation
+  // on every frame just thrashes an already-starved heap.
+  if (s_frame_failed_ms != 0 &&
+      millis() - s_frame_failed_ms < kSpriteRetryMs) {
+    return false;
+  }
   s_frame.setColorDepth(16);
   if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
     Serial.println("radar: frame sprite alloc failed");
+    s_frame_failed_ms = millis();
     return false;
   }
+  s_frame_failed_ms = 0;
   s_frame_ready = true;
   return true;
 }
@@ -716,7 +740,7 @@ bool ensureFrameSprite() {
 // Double-buffered frame: composite the grid AND aircraft into the off-screen
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
-void renderFrame() {
+bool renderFrame() {
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   bool traffic_drawn = false;
   {
@@ -726,39 +750,41 @@ void renderFrame() {
   // The sprite now holds a grid with no traffic on it. Blitting that would
   // flash every target off for a frame, so leave the last complete frame on
   // the panel and try again on the next tick.
-  if (traffic_drawn) {
-    s_frame.pushSprite(0, 0);
+  if (!traffic_drawn) {
+    return false;
   }
+  s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
+  return true;
 }
 
 }  // namespace
 
-void radarDisplayDraw() {
+bool radarDisplayDraw() {
   initPalette();
   initLabelMetrics();
 
   if (ensureFrameSprite()) {
-    renderFrame();
-    return;
+    return renderFrame();
   }
 
   // Fallback when the sprite can't be allocated: draw straight to the panel.
+  // There is no blit to skip here, so the panel is always updated.
   const DrawScope scope(tft);
   drawStaticGrid(tft);
   drawAircraft();
   tft.setTextDatum(textdatum_t::top_left);
+  return true;
 }
 
-void radarDisplayRefreshAircraft() {
+bool radarDisplayRefreshAircraft() {
   initPalette();
 
   if (ensureFrameSprite()) {
-    renderFrame();
-    return;
+    return renderFrame();
   }
 
-  radarDisplayDraw();
+  return radarDisplayDraw();
 }
 
 }  // namespace ui

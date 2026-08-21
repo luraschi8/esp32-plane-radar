@@ -50,7 +50,8 @@ constexpr double kDefaultRadarLon = 4.9041;
 
 /**
  * Pause between ADS-B fetches, applied *after* each one completes rather than
- * as a fixed period. A fetch takes ~1.6 s, so the effective cycle is ~4.6 s.
+ * as a fixed period. With the TLS session reused a fetch takes ~0.5 s, so the
+ * effective cycle is ~3.5 s.
  * Kept as a gap (not a period) so the request rate can never creep toward the
  * adsb.fi public limit of 1 req/s if fetches slow down.
  */

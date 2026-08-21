@@ -26,7 +26,7 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 15.6% (51028 B static), Flash 39.5% (1243500 B of 3 MB).
+RAM 16.7% (54716 B static), Flash 39.6% (1247020 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
@@ -34,7 +34,7 @@ error and `fonts::FreeSansBold12pt7b` etc. resolve without it. (This broke the b
 
 ## Architecture
 
-Single-threaded Arduino `setup()`/`loop()` — no RTOS tasks, no dynamic allocation in the hot path.
+Arduino `setup()`/`loop()` on the main task, plus **one** FreeRTOS task for ADS-B fetching (see below). No dynamic allocation in the hot path.
 Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>/`:
 
 - **`hardware/`** — `LGFX` LovyanGFX device (GC9A01 over SPI2, pins from `config.h`), plus the embedded
@@ -54,13 +54,17 @@ Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>
 the BOOT button, services `wifiLoop()` (keeps the LAN portal alive), reconnects with a grace period on Wi-Fi
 loss, and redraws every `kRenderIntervalMs`.
 
-**ADS-B runs on its own FreeRTOS task** (`startFetchTask`), because a fetch blocks ~1.6 s — almost all of it
-waiting on the socket — and that froze the render loop for half of every cycle. The task parses into a back
+**ADS-B runs on its own FreeRTOS task** (`startFetchTask`), because a fetch blocks — almost all of it waiting
+on the socket — and that froze the render loop for half of every cycle. The `WiFiClientSecure`/`HTTPClient`
+pair is **file-scope and reused**: mbedTLS needs one 16 KB contiguous block, and re-finding it every cycle in a
+fragmented heap caused intermittent `SSL - Memory allocation failed` storms. Reusing the connection also
+dropped the cycle from ~5.0 s to ~3.5 s by skipping the handshake. Any error path calls `s_client.stop()` so
+the next attempt renegotiates. The task parses into a back
 buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` and *skips the
 traffic layer* rather than stalling if it can't get it. Never call `wifiLoop()` / WiFiManager `process()` from
 the fetch task — it is not thread-safe and `loop()` already owns it. `fetchTaskStackFree()` reports the task's
-stack high-water mark (4,820 B of 8,192 used when last measured); check it after anything that deepens the
-fetch call path.
+stack high-water mark and is logged every 32nd fetch (4,820 B of 8,192 used when last measured); watch it
+after anything that deepens the fetch call path, since mbedTLS depth varies with the server's cert chain.
 
 ### Rendering model
 
@@ -106,7 +110,8 @@ the outer ring still have data for the rim bearing dots.
 | `wifi` | `services/wifi_setup.cpp` | `portal` (force-portal-on-next-boot flag) |
 | — | WiFiManager/esp_wifi | SSID + password (not via `Preferences`) |
 
-They are deliberately separate to avoid `Preferences` handle conflicts; a long BOOT press clears all of them.
+They are deliberately separate to avoid `Preferences` handle conflicts. A long BOOT press clears Wi-Fi
+credentials, the location, and the unit/runway flags — but **not** `rangeIdx`, which survives a reset.
 
 ### Portal settings
 
@@ -114,15 +119,16 @@ Custom fields are `WiFiManagerParameter`s in `wifi_setup.cpp`, defaults refreshe
 `refreshPortalParamDefaults()` and persisted in `onPortalParamsSaved()`. Checkboxes are faked by injecting
 `type="checkbox"[ checked]` into the parameter's HTML attribute string; an unchecked box submits nothing, which
 `portalCheckboxChecked()` reads as false. The same `WiFiManager` instance serves the setup AP and the LAN portal
-(`startWebPortal()`), so `wifiLoop()` must be called every iteration and is also passed to
-`services::adsb::setPollFn()` so the portal stays responsive during blocking HTTP reads.
+(`startWebPortal()`), so `wifiLoop()` must be called every iteration. (It used to be passed to a `setPollFn` hook so the
+portal survived the blocking fetch; that hook is gone — the fetch runs on its own task now, and WiFiManager's
+`process()` must never be called from it.)
 
 ## Non-negotiable: speed and memory come first
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
-sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap bottoms out at
-**~20 KB during a fetch** (72 KB idle), with a largest contiguous block of only 9-20 KB. The fetch task's 8 KB
-stack and the second aircraft buffer come out of that same budget. Every review and every change
+sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap is **~71 KB idle** and bottoms at **~20 KB during a fetch**, because mbedTLS allocates
+and frees ~32 KB (including one 16 KB contiguous block) on every request. Largest contiguous block observed:
+9-35 KB. The fetch task's 8 KB stack and the second aircraft buffer come out of that same budget. Every review and every change
 must be judged against that budget, not against what would be reasonable on a desktop.
 
 Concretely, when writing or reviewing code here:
@@ -130,9 +136,11 @@ Concretely, when writing or reviewing code here:
 - **Fragmentation matters as much as totals.** A 16 KB allocation can fail with 37 KB free. Prefer
   fixed-size buffers, streaming, and small chunked allocations over one large block. This is exactly
   what broke the ADS-B client (`payload.reserve(content_length + 1)`).
-- **`kDisplaySpiWriteHz` is at the silicon maximum (80 MHz).** If the panel ever shows speckle, torn
-  rows, or colour corruption, suspect SPI signal integrity first (wiring length, jumper quality) and
-  drop to 60 or 40 MHz in `include/config.h` to confirm.
+- **`kDisplaySpiWriteHz` is 80 MHz, which is out of spec for this pinout.** 80 MHz is the ESP32-C3's
+  *IOMUX* ceiling; SCLK=GPIO4 and MOSI=GPIO3 are not the FSPI IOMUX pins (GPIO6/GPIO7), so this bus routes
+  through the GPIO matrix, which is rated to 40 MHz. It is verified working on the author's unit and halves
+  the 23 ms blit, but it has no margin and may not hold across other builds, wiring or temperature. Speckle,
+  torn rows or colour corruption ⇒ drop to 40 MHz in `include/config.h` first.
 - **No heap in the draw path.** Aircraft live in a static `Aircraft[64]`; the airport dataset is
   `const` in flash; the frame sprite is allocated once and reused. Keep it that way.
 - **Watch per-frame cost.** `renderFrame()` walks all 1,706 runway segments every redraw, and the

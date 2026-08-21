@@ -30,7 +30,11 @@ void showRadarIfConnected() {
     g_radar_visible = false;
     return;
   }
-  ui::radarDisplayDraw();
+  // Only record the radar as shown if the frame really reached the panel;
+  // otherwise loop() retries and we never latch over a status screen.
+  if (!ui::radarDisplayDraw()) {
+    return;
+  }
   g_traffic_was_drawn = services::adsb::hasTraffic();
   g_radar_visible = true;
 }
@@ -42,8 +46,9 @@ void onRangeTap() {
   Serial.printf("Range: %s (outer ~%.0f km)\n", range_label,
                 ui::radar::rangeCurrent().outer_km);
 
-  if (g_radar_visible && WiFi.status() == WL_CONNECTED) {
-    ui::radarDisplayDraw();
+  if (g_radar_visible && WiFi.status() == WL_CONNECTED &&
+      ui::radarDisplayDraw()) {
+    g_traffic_was_drawn = services::adsb::hasTraffic();
   }
 }
 
@@ -121,8 +126,11 @@ void loop() {
       const bool traffic = services::adsb::hasTraffic();
       if (traffic || g_traffic_was_drawn) {
         g_last_render_ms = millis();
-        ui::radarDisplayRefreshAircraft();
-        g_traffic_was_drawn = traffic;
+        // Latch only on a real blit: otherwise a skipped clearing frame would
+        // be recorded as painted and the last targets would stay on screen.
+        if (ui::radarDisplayRefreshAircraft()) {
+          g_traffic_was_drawn = traffic;
+        }
       }
     }
   }

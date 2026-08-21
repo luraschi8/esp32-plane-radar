@@ -16,6 +16,7 @@ constexpr char kKeyLon[] = "lon";
 
 double s_lat = config::kDefaultRadarLat;
 double s_lon = config::kDefaultRadarLon;
+portMUX_TYPE s_coord_mux = portMUX_INITIALIZER_UNLOCKED;
 
 bool parseCoord(const char* text, double* out) {
   if (text == nullptr || text[0] == '\0') {
@@ -40,8 +41,10 @@ void persist(double lat, double lon) {
   prefs.putDouble(kKeyLat, lat);
   prefs.putDouble(kKeyLon, lon);
   prefs.end();
+  portENTER_CRITICAL(&s_coord_mux);
   s_lat = lat;
   s_lon = lon;
+  portEXIT_CRITICAL(&s_coord_mux);
 }
 
 }  // namespace
@@ -64,6 +67,13 @@ double lat() { return s_lat; }
 
 double lon() { return s_lon; }
 
+void snapshot(double* out_lat, double* out_lon) {
+  portENTER_CRITICAL(&s_coord_mux);
+  *out_lat = s_lat;
+  *out_lon = s_lon;
+  portEXIT_CRITICAL(&s_coord_mux);
+}
+
 bool saveFromStrings(const char* lat_str, const char* lon_str) {
   double lat = 0.0;
   double lon = 0.0;
@@ -84,8 +94,10 @@ void clear() {
   prefs.remove(kKeyLat);
   prefs.remove(kKeyLon);
   prefs.end();
+  portENTER_CRITICAL(&s_coord_mux);
   s_lat = config::kDefaultRadarLat;
   s_lon = config::kDefaultRadarLon;
+  portEXIT_CRITICAL(&s_coord_mux);
 }
 
 }  // namespace services::location

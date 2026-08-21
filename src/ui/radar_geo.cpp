@@ -30,10 +30,19 @@ float lonScale() {
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km) {
-  *dx_km = static_cast<float>(lon - services::location::lon()) * kKmPerDeg *
-           lonScale();
+  // Normalise across the antimeridian, or a centre at 179.9 deg puts a target
+  // 11 km to its east on the opposite rim.
+  float dlon = static_cast<float>(lon - services::location::lon());
+  if (dlon > 180.0f) {
+    dlon -= 360.0f;
+  } else if (dlon < -180.0f) {
+    dlon += 360.0f;
+  }
+  *dx_km = dlon * kKmPerDeg * lonScale();
   *dy_km = static_cast<float>(lat - services::location::lat()) * kKmPerDeg;
-  *dist_km = sqrtf((*dx_km) * (*dx_km) + (*dy_km) * (*dy_km));
+  if (dist_km != nullptr) {
+    *dist_km = sqrtf((*dx_km) * (*dx_km) + (*dy_km) * (*dy_km));
+  }
 }
 
 float pxPerKm() {

@@ -74,8 +74,8 @@ pio run -e supermini -t clean && pio run -e supermini 2>&1 \
 The size report at the end of every build is the memory budget. Current baseline:
 
 ```
-RAM:   [==        ]  15.6% (used 51028 bytes from 327680 bytes)
-Flash: [====      ]  39.5% (used 1243500 bytes from 3145728 bytes)
+RAM:   [==        ]  16.7% (used 54716 bytes from 327680 bytes)
+Flash: [====      ]  39.6% (used 1247020 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite
@@ -95,8 +95,8 @@ Flash (section 4), open the serial monitor, and walk the checklist:
 | No saved Wi-Fi | Yellow setup screen, AP `PlaneRadar-Setup` appears in the Wi-Fi list |
 | Portal at `http://plane-radar.local` or `http://192.168.4.1` | Wi-Fi form + Latitude / Longitude / miles / runways fields |
 | After saving Wi-Fi | `Connected: <ssid>  IP <addr>`, then the radar grid draws |
-| Every ~3 s | `adsb: N aircraft` on serial; symbols move between frames |
-| Short-tap BOOT | `Range: 10km (outer ~13 km)` — cycles 5 → 10 → 15 → 20 → 25 km, ring label changes |
+| Every ~3.5 s | `adsb: N aircraft` on serial (a 3 s gap after a ~0.5 s fetch); every 32nd line also reports fetch-task stack headroom |
+| Short-tap BOOT | `Range: 10km (outer ~13 km)` — cycles 5 → 10 → 15 → 20 → 25 km, ring label changes. Note a long press does **not** reset the range |
 | Hold BOOT 3 s | `BOOT held — resetting WiFi`, reset screen, reboot into the portal |
 | Reconnect (`http://<device-ip>`) | Portal reachable while the radar keeps running |
 
@@ -215,6 +215,6 @@ the flash figure — the dataset is the largest single contributor to image size
 | Colours inverted or red/blue swapped | Flip `kDisplayInvert` / `kDisplayRgbOrder`. `initPalette()` swaps R/B for the aircraft colour when `kDisplayRgbOrder` is set |
 | Reboot loop when Wi-Fi connects | Brownout — the Super Mini's regulator is marginal at full TX power. TX power is deliberately capped at `WIFI_POWER_8_5dBm` in both AP and STA paths; do not raise it. Also try a better USB supply |
 | `radar: frame sprite alloc failed` | Out of heap for the 115 KB frame buffer; display falls back to direct drawing |
-| `adsb: HTTP -1` / `adsb: empty response` | Transient network or adsb.fi hiccup; the previous frame is kept. Persistent failures: check DNS and that `kAdsbFetchIntervalMs` (3 s) still respects adsb.fi's 1 req/s limit |
+| `adsb: HTTP -1`, `adsb: no response stream`, `adsb: JSON parse error: … (heap=… largest=…)` | Transient network or adsb.fi hiccup; the previous frame is kept and the fetch task retries after the next gap. After 60 s with no successful fetch the traffic layer is cleared rather than shown stale |
 | Portal saves but nothing changes | `Invalid lat/lon in portal — keeping previous location` on serial means the coordinates failed parsing or range validation |
 | `.local` address won't resolve | mDNS is slow or blocked on some clients; use the IP printed on serial at boot |

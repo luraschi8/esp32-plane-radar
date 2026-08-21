@@ -10,6 +10,8 @@ namespace ui::radar {
  * is only 111 km at the equator and shrinks towards the poles, so without this
  * correction everything east-west is stretched by 1/cos(lat) (~1.64x at 52 deg).
  * The approximation is accurate well beyond the widest range preset (~33 km).
+ * dist_km may be null when the caller will recompute the distance anyway --
+ * the sqrtf is not free on a core without an FPU.
  */
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km);

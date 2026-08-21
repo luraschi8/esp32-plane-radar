@@ -9,6 +9,13 @@ void init();
 double lat();
 double lon();
 
+/**
+ * Read both coordinates as one consistent pair. The portal can rewrite them
+ * from the loop task while the fetch task is mid-request, and a double is two
+ * stores on a 32-bit core, so readers that need both must use this.
+ */
+void snapshot(double* out_lat, double* out_lon);
+
 /** Parse portal strings, validate, persist to NVS, update runtime values. */
 bool saveFromStrings(const char* lat_str, const char* lon_str);
 

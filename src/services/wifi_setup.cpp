@@ -106,6 +106,11 @@ void onPortalParamsSaved() {
   }
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
+  // WiFiManager overwrites each parameter's value with what the browser sent,
+  // and an unchecked box sends nothing. Without restoring value="T" (and the
+  // checked attribute) the box renders wrong on the next page load and can
+  // never be switched back on until the portal restarts.
+  refreshPortalParamDefaults();
 }
 
 void attachPortalParams(WiFiManager& wm) {

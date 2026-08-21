@@ -43,6 +43,8 @@ constexpr uint32_t kFetchTaskStackBytes = 8192;
 
 /** Dead reckoning past this is guesswork, so positions freeze instead. */
 constexpr float kMaxExtrapolationSec = 12.0f;
+/** Past this with no successful fetch, drop the picture rather than lie. */
+constexpr float kDataExpirySec = 60.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr float kKnotsToKmPerSec = kKmPerNm / 3600.0f;
 
@@ -219,7 +221,7 @@ size_t aircraftCount() { return s_counts[s_front]; }
 
 const Aircraft* aircraftList() { return s_buffers[s_front]; }
 
-bool hasTraffic() { return s_counts[s_front] > 0; }
+bool hasTraffic() { return s_counts[s_front] > 0 && !dataExpired(); }
 
 bool aircraftLock(uint32_t timeout_ms) {
   if (s_mutex == nullptr) {
@@ -234,6 +236,26 @@ void aircraftUnlock() {
   }
 }
 
+namespace {
+
+/**
+ * Fetch-task only. The double-buffer scheme is safe solely because exactly one
+ * writer picks back = s_front ^ 1; a second caller could select the buffer the
+ * render loop is holding.
+ */
+/**
+ * The TLS client is kept alive between fetches instead of being a function
+ * local. mbedTLS wants ~32 KB, including one 16 KB *contiguous* block, and
+ * measured min-free heap on this device is ~12 KB: finding that block again
+ * every 4.6 s in a heap the WiFi stack has already fragmented is what produced
+ * intermittent "SSL - Memory allocation failed" storms. Claiming it once, and
+ * reusing the connection the server already offers via keep-alive, removes the
+ * repeated large allocation entirely.
+ */
+WiFiClientSecure s_client;
+HTTPClient s_http;
+bool s_client_configured = false;
+
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
@@ -244,11 +266,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   url += "/dist/";
   url += String(dist_nm, 1);
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  if (!s_client_configured) {
+    s_client.setInsecure();
+    s_client_configured = true;
+  }
 
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  HTTPClient& http = s_http;
+  if (!http.begin(s_client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
@@ -258,6 +282,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
+    s_client.stop();  // force a fresh session next time
     return false;
   }
 
@@ -265,6 +290,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (body == nullptr) {
     Serial.println("adsb: no response stream");
     http.end();
+    s_client.stop();
     return false;
   }
 
@@ -275,10 +301,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const DeserializationError err =
       deserializeJson(doc, *body, DeserializationOption::Filter(filter));
   http.end();
-  client.stop();
   if (err) {
     Serial.printf("adsb: JSON parse error: %s (heap=%u largest=%u)\n",
                   err.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    s_client.stop();
     return false;
   }
 
@@ -324,17 +350,26 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   publish(back, n);
-  Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  // Periodically report the task's stack headroom: the mbedTLS handshake depth
+  // varies with the server's certificate chain, so this can drift with no code
+  // change. Rare enough to be free, frequent enough to catch creep.
+  static uint8_t stack_report = 0;
+  if ((stack_report++ & 0x1F) == 0) {
+    Serial.printf("adsb: %u aircraft (task stack free %u B)\n",
+                  static_cast<unsigned>(n), fetchTaskStackFree());
+  } else {
+    Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  }
   return true;
 }
-
-namespace {
 
 void fetchTask(void*) {
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
-      fetchUpdate(services::location::lat(), services::location::lon(),
-                  ui::radar::fetchRadiusKm());
+      double lat = 0.0;
+      double lon = 0.0;
+      services::location::snapshot(&lat, &lon);
+      fetchUpdate(lat, lon, ui::radar::fetchRadiusKm());
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
@@ -373,12 +408,20 @@ unsigned fetchTaskStackFree() {
              : uxTaskGetStackHighWaterMark(s_task) * sizeof(StackType_t);
 }
 
-float secondsSinceUpdate() {
+float secondsSinceUpdateRaw() {
   if (s_last_update_ms == 0) {
     return 0.0f;
   }
-  const float age_s = (millis() - s_last_update_ms) / 1000.0f;
+  return (millis() - s_last_update_ms) / 1000.0f;
+}
+
+float secondsSinceUpdate() {
+  const float age_s = secondsSinceUpdateRaw();
   return age_s > kMaxExtrapolationSec ? kMaxExtrapolationSec : age_s;
+}
+
+bool dataExpired() {
+  return s_last_update_ms != 0 && secondsSinceUpdateRaw() > kDataExpirySec;
 }
 
 }  // namespace services::adsb

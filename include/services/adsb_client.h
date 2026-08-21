@@ -56,13 +56,20 @@ unsigned fetchTaskStackFree();
 /** Lock-free heuristic for "is there anything to animate"; may be one fetch stale. */
 bool hasTraffic();
 
-/** Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi. */
-bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
-
 /**
  * Seconds since the last successful fetch, clamped so a run of failures cannot
  * extrapolate an aircraft into fiction. 0 before the first fetch.
  */
 float secondsSinceUpdate();
+
+/** Seconds since the last successful fetch, unclamped. 0 before the first. */
+float secondsSinceUpdateRaw();
+
+/**
+ * True once the last successful fetch is old enough that the list must not be
+ * shown at all. Without this a stalled feed leaves the panel presenting
+ * minutes-old traffic as live, which is worse than showing nothing.
+ */
+bool dataExpired();
 
 }  // namespace services::adsb
