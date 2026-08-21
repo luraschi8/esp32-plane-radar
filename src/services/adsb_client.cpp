@@ -24,6 +24,8 @@ constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kRequestTimeoutMs = 10000;
+constexpr uint8_t kMaxGetAttempts = 3;
+constexpr unsigned long kRetryPauseMs = 50;
 
 /**
  * Two buffers: the task parses into the back one and swaps under the mutex, so
@@ -44,10 +46,17 @@ constexpr float kMaxExtrapolationSec = 12.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr float kKnotsToKmPerSec = kKmPerNm / 3600.0f;
 
+/**
+ * A couple of quick retries cover the moment just after the link comes up.
+ * This used to retry until a 10 s deadline with only a 5 ms pause, which meant
+ * ~118 TLS handshakes against an API documented at 1 req/s -- so one transient
+ * failure could get the address throttled and turn itself into an outage. The
+ * fetch task comes back in a few seconds regardless, so giving up early is
+ * strictly better than hammering.
+ */
 int performGetWithRetry(HTTPClient& http) {
   http.setConnectTimeout(kConnectAttemptMs);
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
+  for (uint8_t attempt = 0; attempt < kMaxGetAttempts; ++attempt) {
     const int code = http.GET();
     if (code > 0) {
       return code;
@@ -56,9 +65,9 @@ int performGetWithRetry(HTTPClient& http) {
         code != HTTPC_ERROR_NOT_CONNECTED) {
       return code;
     }
-    delay(5);
+    delay(kRetryPauseMs);
   }
-  return HTTPC_ERROR_READ_TIMEOUT;
+  return HTTPC_ERROR_CONNECTION_REFUSED;
 }
 
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
