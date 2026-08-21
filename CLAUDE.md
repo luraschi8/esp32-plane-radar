@@ -56,8 +56,8 @@ loss, and redraws every `kRenderIntervalMs`.
 
 **ADS-B runs on its own FreeRTOS task** (`startFetchTask`), because a fetch blocks — almost all of it waiting
 on the socket — and that froze the render loop for half of every cycle. The `WiFiClientSecure`/`HTTPClient`
-pair is **file-scope and reused**: mbedTLS needs one 16 KB contiguous block, and re-finding it every cycle in a
-fragmented heap caused intermittent `SSL - Memory allocation failed` storms. Reusing the connection also
+pair is **file-scope and reused**: mbedTLS needs two ~16.4 KB contiguous blocks, and re-finding them every cycle in
+a fragmented heap caused intermittent `SSL - Memory allocation failed` storms. Reusing the connection also
 dropped the cycle from ~4.6 s to ~3.5 s by skipping the handshake. Any error path calls `s_client.stop()` so
 the next attempt renegotiates. The task parses into a back
 buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` and *skips the
@@ -129,8 +129,10 @@ portal survived the blocking fetch; that hook is gone — the fetch runs on its 
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
 sprite alone takes 115 KB and mbedTLS permanently holds ~33 KB for the reused TLS session. Measured with the TLS session held: free heap at the start of a request is **30,856 B — bit-identical across
-38 consecutive fetches**, and the **largest contiguous block is 9,204 B**. A fetch transiently consumes ~6 KB
-(the filtered JSON document, in 4 KB pool chunks) and returns it. mbedTLS permanently holds ~33 KB as *two*
+38 consecutive fetches**, and the **largest contiguous block is 9,204 B**. A fetch transiently consumes ~6 KB on device
+(the filtered JSON document, in 4 KB pool chunks) and returns it; the same document measures ~9.6 KB peak
+when parsed on a host with a tracking allocator against a captured 23-aircraft payload — the device figure is
+lower simply because the local sky is quieter. mbedTLS permanently holds ~33 KB as *two*
 ~16.4 KB blocks plus a ~2.5 KB context; the frame sprite holds 115 KB; the fetch task's 8 KB stack and the
 second aircraft buffer come out of the same pool.
 
@@ -142,7 +144,8 @@ must be judged against that budget, not against what would be reasonable on a de
 
 Concretely, when writing or reviewing code here:
 
-- **Fragmentation matters as much as totals.** A 16 KB allocation can fail with 37 KB free. Prefer
+- **Fragmentation matters as much as totals.** A 16 KB allocation can fail with 31 KB free when the
+  largest contiguous block is 9.2 KB — the measured state on this device. Prefer
   fixed-size buffers, streaming, and small chunked allocations over one large block. This is exactly
   what broke the ADS-B client (`payload.reserve(content_length + 1)`).
 - **`kDisplaySpiWriteHz` is 80 MHz, which is out of spec for this pinout.** 80 MHz is the ESP32-C3's

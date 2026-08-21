@@ -89,7 +89,8 @@ void publish(uint8_t back, size_t count) {
  * The only fields this client reads. adsb.fi returns ~53 per aircraft; parsing
  * all of them peaks at ~32 KB of heap for a typical response and was failing
  * with NoMemory. A filter still scans the whole body but only allocates for
- * these keys, which measures ~9.6 KB for the same payload.
+ * these keys, which measures ~9.6 KB peak for the same payload (host tracking
+ * allocator, 23-aircraft capture; ~6 KB transient on device with a quieter sky).
  */
 constexpr const char* kWantedFields[] = {
     "lat",  "lon", "true_heading", "mag_heading", "track",    "dir",
@@ -246,7 +247,8 @@ namespace {
  * local. mbedTLS wants ~33 KB as *two* ~16.4 KB contiguous blocks (in and out content
  * buffers; MBEDTLS_ASYMMETRIC_CONTENT_LEN is not set in this SDK) plus a ~2.5 KB
  * context, and
- * measured min-free heap on this device is ~12 KB: finding that block again
+ * the lifetime min-free heap on this device is ~12 KB (measured across the
+ * first handshake; the steady-state floor is ~25 KB): finding that block again
  * on every cycle in a heap the WiFi stack has already fragmented is what produced
  * intermittent "SSL - Memory allocation failed" storms. Claiming it once, and
  * reusing the connection the server already offers via keep-alive, removes the
