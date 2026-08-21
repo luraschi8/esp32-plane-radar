@@ -515,11 +515,15 @@ bool drawAircraft() {
     // fix was taken. This also makes a repeated stale position continuous
     // instead of snapping the target backwards.
     // Dim on either cause of staleness, tested separately rather than on the
-    // sum: pos_age_s is constant for a whole fetch cycle and fetch_age_raw only
-    // crosses the horizon when the feed actually stalls, so neither term can
-    // oscillate. Summing them made any target whose fix age sat within one
-    // cycle of the horizon blink once per fetch. The drawn position still uses
-    // the clamped sum, so the symbol never jumps when the colour changes.
+    // sum. Summing them made *every* target whose fix age sat within one fetch
+    // cycle of the horizon blink once per cycle, because fetch_age_raw resets
+    // on each fetch. Tested apart, pos_age_s is constant for a whole cycle and
+    // fetch_age_raw only crosses the horizon when the feed genuinely stalls.
+    // This reduces the flicker rather than eliminating it: an aircraft whose
+    // source updates near the horizon still reports a seen_pos that straddles
+    // it from fetch to fetch. Removing that needs per-target hysteresis keyed
+    // on hex across fetches. The drawn position uses the clamped sum, so the
+    // symbol never moves when the colour changes.
     const bool stale = planes[i].pos_age_s >= services::adsb::kExtrapolationHorizonSec ||
                        fetch_age_raw >= services::adsb::kExtrapolationHorizonSec;
     const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
@@ -755,6 +759,8 @@ bool renderFrame() {
 }
 
 }  // namespace
+
+bool radarDisplayReserveFrame() { return ensureFrameSprite(); }
 
 bool radarDisplayDraw() {
   initPalette();

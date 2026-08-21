@@ -85,6 +85,12 @@ void setup() {
 
   bootButtonInit();
   displayInit();
+  // Before WiFi: the frame buffer needs 115 KB contiguous and the network stack
+  // plus the reused TLS session leave a largest free block of ~9 KB. Claimed
+  // here it always succeeds; claimed later it may never succeed again.
+  if (!ui::radarDisplayReserveFrame()) {
+    Serial.println("radar: frame buffer unavailable — falling back to direct draw");
+  }
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }

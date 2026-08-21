@@ -26,7 +26,7 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 There is **no test suite, linter, or formatter** configured. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.6% (1247096 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.6% (1247186 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
