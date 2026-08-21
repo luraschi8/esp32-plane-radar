@@ -1,13 +1,20 @@
 #include "services/adsb_client.h"
 
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <ArduinoJson.h>
 
 #include <cstring>
 
 #include "config.h"
+#include "services/radar_location.h"
+#include "ui/radar_range.h"
 
 namespace services::adsb {
 
@@ -18,27 +25,29 @@ constexpr float kKmPerNm = 1.852f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kRequestTimeoutMs = 10000;
 
-Aircraft s_aircraft[kMaxAircraft];
-size_t s_aircraft_count = 0;
-PollFn s_poll_fn = nullptr;
+/**
+ * Two buffers: the task parses into the back one and swaps under the mutex, so
+ * the render loop never reads a half-written list and never blocks on the fetch.
+ */
+Aircraft s_buffers[2][kMaxAircraft];
+size_t s_counts[2] = {0, 0};
+uint8_t s_front = 0;
+SemaphoreHandle_t s_mutex = nullptr;
+TaskHandle_t s_task = nullptr;
 unsigned long s_last_update_ms = 0;
+
+/** Big enough for the mbedTLS handshake; high-water mark checked on device. */
+constexpr uint32_t kFetchTaskStackBytes = 8192;
 
 /** Dead reckoning past this is guesswork, so positions freeze instead. */
 constexpr float kMaxExtrapolationSec = 12.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr float kKnotsToKmPerSec = kKmPerNm / 3600.0f;
 
-void pollNetwork() {
-  if (s_poll_fn != nullptr) {
-    s_poll_fn();
-  }
-}
-
-int performGetWithPoll(HTTPClient& http) {
+int performGetWithRetry(HTTPClient& http) {
   http.setConnectTimeout(kConnectAttemptMs);
   const unsigned long deadline = millis() + kRequestTimeoutMs;
   while (millis() < deadline) {
-    pollNetwork();
     const int code = http.GET();
     if (code > 0) {
       return code;
@@ -54,50 +63,18 @@ int performGetWithPoll(HTTPClient& http) {
 
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
 
-/**
- * Feeds the HTTPS body straight into the JSON parser.
- *
- * The previous code buffered the whole body into a String first, which needed
- * one contiguous Content-Length-sized block (~16 KB). On a fragmented heap that
- * reserve() fails, the following concat() fails silently, and the read loop
- * spins until its deadline and hands a truncated document to the parser.
- * Streaming never allocates more than ArduinoJson's 4 KB pool chunks.
- *
- * pollNetwork() (wifiLoop) is called on a timer rather than per byte: the
- * parser reads a character at a time, so polling every call would run the
- * captive portal thousands of times per response.
- */
-class PollingStream : public Stream {
- public:
-  explicit PollingStream(Stream& inner) : inner_(inner) {}
-
-  int available() override {
-    poll();
-    return inner_.available();
+/** Make a freshly parsed buffer visible to the render loop. */
+void publish(uint8_t back, size_t count) {
+  s_counts[back] = count;
+  if (s_mutex != nullptr) {
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
   }
-  int read() override { return inner_.read(); }
-  int peek() override { return inner_.peek(); }
-  size_t readBytes(char* buffer, size_t length) override {
-    poll();
-    return inner_.readBytes(buffer, length);
+  s_front = back;
+  s_last_update_ms = millis();
+  if (s_mutex != nullptr) {
+    xSemaphoreGive(s_mutex);
   }
-  size_t write(uint8_t) override { return 0; }
-  void flush() override {}
-
- private:
-  static constexpr unsigned long kPollIntervalMs = 20;
-
-  void poll() {
-    const unsigned long now = millis();
-    if (now - last_poll_ms_ >= kPollIntervalMs) {
-      last_poll_ms_ = now;
-      pollNetwork();
-    }
-  }
-
-  Stream& inner_;
-  unsigned long last_poll_ms_ = 0;
-};
+}
 
 /**
  * The only fields this client reads. adsb.fi returns ~53 per aircraft; parsing
@@ -108,7 +85,7 @@ class PollingStream : public Stream {
 constexpr const char* kWantedFields[] = {
     "lat",  "lon", "true_heading", "mag_heading", "track",    "dir",
     "gs",   "tas", "ias",          "alt_baro",    "alt_geom", "flight",
-    "hex",  "t",   "dst"};
+    "hex",  "t",   "dst",         "seen_pos"};
 
 void buildFilter(JsonDocument& filter) {
   JsonObject plane = filter["ac"][0].to<JsonObject>();
@@ -229,11 +206,24 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
 
 }  // namespace
 
-void setPollFn(PollFn fn) { s_poll_fn = fn; }
+size_t aircraftCount() { return s_counts[s_front]; }
 
-size_t aircraftCount() { return s_aircraft_count; }
+const Aircraft* aircraftList() { return s_buffers[s_front]; }
 
-const Aircraft* aircraftList() { return s_aircraft; }
+bool hasTraffic() { return s_counts[s_front] > 0; }
+
+bool aircraftLock(uint32_t timeout_ms) {
+  if (s_mutex == nullptr) {
+    return true;  // task never started: single-threaded, nothing to guard
+  }
+  return xSemaphoreTake(s_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void aircraftUnlock() {
+  if (s_mutex != nullptr) {
+    xSemaphoreGive(s_mutex);
+  }
+}
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
@@ -255,7 +245,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   http.setTimeout(kRequestTimeoutMs);
-  const int code = performGetWithPoll(http);
+  const int code = performGetWithRetry(http);
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
@@ -272,20 +262,23 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   JsonDocument filter;
   buildFilter(filter);
 
-  PollingStream polling(*body);
   JsonDocument doc;
   const DeserializationError err =
-      deserializeJson(doc, polling, DeserializationOption::Filter(filter));
+      deserializeJson(doc, *body, DeserializationOption::Filter(filter));
   http.end();
+  client.stop();
   if (err) {
     Serial.printf("adsb: JSON parse error: %s (heap=%u largest=%u)\n",
                   err.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     return false;
   }
 
+  const uint8_t back = s_front ^ 1;
+  Aircraft* out = s_buffers[back];
+
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (ac.isNull()) {
-    s_aircraft_count = 0;
+    publish(back, 0);
     return true;
   }
 
@@ -301,27 +294,69 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
       continue;
     }
 
-    s_aircraft[n].lat = plane["lat"].as<float>();
-    s_aircraft[n].lon = plane["lon"].as<float>();
-    s_aircraft[n].nose_deg = pickNoseHeading(plane);
-    s_aircraft[n].track_deg = pickTrackHeading(plane);
-    s_aircraft[n].gs_knots = pickGroundSpeed(plane);
+    out[n].lat = plane["lat"].as<float>();
+    out[n].lon = plane["lon"].as<float>();
+    out[n].nose_deg = pickNoseHeading(plane);
+    out[n].track_deg = pickTrackHeading(plane);
+    out[n].gs_knots = pickGroundSpeed(plane);
     // Resolve the track into east/north components now: it is constant until
     // the next fetch, and the render loop runs many frames per fetch.
-    const float gs_km_s = s_aircraft[n].gs_knots * kKnotsToKmPerSec;
-    const float track_rad = s_aircraft[n].track_deg * kDegToRad;
-    s_aircraft[n].vel_e_km_s = gs_km_s * sinf(track_rad);
-    s_aircraft[n].vel_n_km_s = gs_km_s * cosf(track_rad);
+    const float gs_km_s = out[n].gs_knots * kKnotsToKmPerSec;
+    const float track_rad = out[n].track_deg * kDegToRad;
+    out[n].vel_e_km_s = gs_km_s * sinf(track_rad);
+    out[n].vel_n_km_s = gs_km_s * cosf(track_rad);
     float dst = -1.0f;
-    s_aircraft[n].dst_nm = readJsonFloat(plane, "dst", &dst) ? dst : -1.0f;
-    fillTagFields(&s_aircraft[n], plane);
+    out[n].dst_nm = readJsonFloat(plane, "dst", &dst) ? dst : -1.0f;
+    float seen_pos = 0.0f;
+    out[n].pos_age_s =
+        readJsonFloat(plane, "seen_pos", &seen_pos) ? seen_pos : 0.0f;
+    fillTagFields(&out[n], plane);
     ++n;
   }
 
-  s_aircraft_count = n;
-  s_last_update_ms = millis();
+  publish(back, n);
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
+}
+
+namespace {
+
+void fetchTask(void*) {
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      fetchUpdate(services::location::lat(), services::location::lon(),
+                  ui::radar::fetchRadiusKm());
+    }
+    vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
+  }
+}
+
+}  // namespace
+
+bool startFetchTask() {
+  if (s_task != nullptr) {
+    return true;
+  }
+  s_mutex = xSemaphoreCreateMutex();
+  if (s_mutex == nullptr) {
+    Serial.println("adsb: mutex alloc failed");
+    return false;
+  }
+  // Same priority as the Arduino loop task: the fetch spends nearly all its
+  // time blocked on the socket, so the render loop runs while it waits.
+  if (xTaskCreate(fetchTask, "adsb", kFetchTaskStackBytes, nullptr, 1, &s_task) !=
+      pdPASS) {
+    Serial.println("adsb: fetch task create failed");
+    s_task = nullptr;
+    return false;
+  }
+  return true;
+}
+
+unsigned fetchTaskStackFree() {
+  return s_task == nullptr
+             ? 0
+             : uxTaskGetStackHighWaterMark(s_task) * sizeof(StackType_t);
 }
 
 float secondsSinceUpdate() {

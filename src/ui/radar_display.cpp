@@ -464,8 +464,21 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
   }
 }
 
+/**
+ * Total dead-reckoning horizon. A position can arrive already tens of seconds
+ * stale, so this has to cap seen_pos + our own age, not just our own age.
+ */
+constexpr float kMaxExtrapolationSec = 12.0f;
+
+/** Skip the traffic layer rather than stall the frame if the fetch task holds the lock. */
+constexpr uint32_t kAircraftLockWaitMs = 20;
+
 void drawAircraft() {
   initLabelMetrics();
+
+  if (!services::adsb::aircraftLock(kAircraftLockWaitMs)) {
+    return;
+  }
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
@@ -477,13 +490,18 @@ void drawAircraft() {
 
   // Dead reckoning: advance each target along its own ground velocity since the
   // last fetch, so the picture moves between the (~3 s) network updates.
-  const float age_s = services::adsb::secondsSinceUpdate();
+  const float fetch_age_s = services::adsb::secondsSinceUpdate();
 
   for (size_t i = 0; i < n; ++i) {
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
     radar::offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    // Positions arrive stale by their own seen_pos, so advance from when the
+    // fix was taken. This also makes a repeated stale position continuous
+    // instead of snapping the target backwards.
+    const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
+                                 kMaxExtrapolationSec);
     dx_km += planes[i].vel_e_km_s * age_s;
     dy_km += planes[i].vel_n_km_s * age_s;
     dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);
@@ -532,6 +550,8 @@ void drawAircraft() {
     const size_t i = items[d].index;
     drawAircraftTag(items[d].x, items[d].y, planes[i]);
   }
+
+  services::adsb::aircraftUnlock();
 }
 
 void applyCardinalStyle() {

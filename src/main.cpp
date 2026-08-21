@@ -19,7 +19,6 @@ namespace {
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
-unsigned long g_last_adsb_fetch_ms = 0;
 unsigned long g_last_render_ms = 0;
 
 void showRadarIfConnected() {
@@ -50,17 +49,6 @@ void handleBootButton() {
   }
 }
 
-void fetchAndDrawAircraft() {
-  const float fetch_km = ui::radar::fetchRadiusKm();
-  if (!services::adsb::fetchUpdate(services::location::lat(),
-                                   services::location::lon(), fetch_km)) {
-    handleBootButton();
-    return;
-  }
-  ui::radarDisplayRefreshAircraft();
-  handleBootButton();
-}
-
 }  // namespace
 
 void setup() {
@@ -76,11 +64,14 @@ void setup() {
   }
   services::location::init();
   ui::radar::rangeInit();
-  services::adsb::setPollFn(wifiLoop);
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();
   }
+
+  // ADS-B runs on its own task from here: the fetch blocks for ~1.6 s, almost
+  // all of it waiting on the socket, and loop() must keep rendering meanwhile.
+  services::adsb::startFetchTask();
 }
 
 void loop() {
@@ -110,14 +101,10 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
-    } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-      g_last_adsb_fetch_ms = millis();
-      fetchAndDrawAircraft();
-      g_last_render_ms = millis();
-    } else if (services::adsb::aircraftCount() > 0 &&
+    } else if (services::adsb::hasTraffic() &&
                millis() - g_last_render_ms >= config::kRenderIntervalMs) {
-      // Between fetches the targets still move: redraw from dead reckoning.
-      // Skipped when there is nothing to animate, so an empty sky costs nothing.
+      // Fetching happens on its own task; loop() just animates the last list
+      // forward by dead reckoning. Skipped when there is nothing to animate.
       g_last_render_ms = millis();
       ui::radarDisplayRefreshAircraft();
     }

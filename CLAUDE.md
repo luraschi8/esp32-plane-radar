@@ -52,7 +52,15 @@ Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>
 
 `main.cpp` owns the state machine: boot → optional setup screen → `wifiSetupConnect()` → radar; the loop polls
 the BOOT button, services `wifiLoop()` (keeps the LAN portal alive), reconnects with a grace period on Wi-Fi
-loss, and every `kAdsbFetchIntervalMs` fetches + redraws.
+loss, and redraws every `kRenderIntervalMs`.
+
+**ADS-B runs on its own FreeRTOS task** (`startFetchTask`), because a fetch blocks ~1.6 s — almost all of it
+waiting on the socket — and that froze the render loop for half of every cycle. The task parses into a back
+buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` and *skips the
+traffic layer* rather than stalling if it can't get it. Never call `wifiLoop()` / WiFiManager `process()` from
+the fetch task — it is not thread-safe and `loop()` already owns it. `fetchTaskStackFree()` reports the task's
+stack high-water mark (4,820 B of 8,192 used when last measured); check it after anything that deepens the
+fetch call path.
 
 ### Rendering model
 
@@ -112,8 +120,9 @@ Custom fields are `WiFiManagerParameter`s in `wifi_setup.cpp`, defaults refreshe
 ## Non-negotiable: speed and memory come first
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
-sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap during an ADS-B
-fetch is **~35-42 KB, with a largest contiguous block of only 9-20 KB**. Every review and every change
+sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap bottoms out at
+**~20 KB during a fetch** (72 KB idle), with a largest contiguous block of only 9-20 KB. The fetch task's 8 KB
+stack and the second aircraft buffer come out of that same budget. Every review and every change
 must be judged against that budget, not against what would be reasonable on a desktop.
 
 Concretely, when writing or reviewing code here:
