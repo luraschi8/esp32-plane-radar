@@ -106,6 +106,31 @@ Custom fields are `WiFiManagerParameter`s in `wifi_setup.cpp`, defaults refreshe
 (`startWebPortal()`), so `wifiLoop()` must be called every iteration and is also passed to
 `services::adsb::setPollFn()` so the portal stays responsive during blocking HTTP reads.
 
+## Non-negotiable: speed and memory come first
+
+This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
+sprite alone takes 115 KB and mbedTLS takes ~32 KB per request. Measured free heap during an ADS-B
+fetch is **~35-42 KB, with a largest contiguous block of only 9-20 KB**. Every review and every change
+must be judged against that budget, not against what would be reasonable on a desktop.
+
+Concretely, when writing or reviewing code here:
+
+- **Fragmentation matters as much as totals.** A 16 KB allocation can fail with 37 KB free. Prefer
+  fixed-size buffers, streaming, and small chunked allocations over one large block. This is exactly
+  what broke the ADS-B client (`payload.reserve(content_length + 1)`).
+- **No heap in the draw path.** Aircraft live in a static `Aircraft[64]`; the airport dataset is
+  `const` in flash; the frame sprite is allocated once and reused. Keep it that way.
+- **Watch per-frame cost.** `renderFrame()` walks all 1,706 runway segments every redraw, and the
+  runway pass calls the projection ~1,700x. Cache anything trigonometric that does not change per
+  call -- `radar_geo.cpp` caches `cos(centre latitude)` for this reason.
+- **Check return values of allocating calls.** `String::concat`, `reserve`, and `createSprite` all
+  fail silently by returning false; ignoring that turns an allocation failure into a hang or corruption.
+- **Measure, don't estimate.** ArduinoJson is header-only and compiles on the host: a tracking
+  allocator against a real captured payload gives exact peaks. `ESP.getFreeHeap()` /
+  `ESP.getMaxAllocHeap()` around a suspect block gives the on-device truth. Both were decisive here,
+  and both times the device contradicted a plausible-sounding model.
+- **Report the size delta** from the build output with any change that touches the hot path.
+
 ## Conventions
 
 - C++17, 2-space indent, ~90 col. `kPascalCase` for constants, `s_` for file statics, `g_` for globals,
