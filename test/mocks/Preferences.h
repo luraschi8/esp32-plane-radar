@@ -9,14 +9,22 @@ struct MockNvs {
   std::map<std::string, std::string> store;   // "ns/key" -> raw bytes
   int open_fail_count = 0;                    // force begin() failures
   void reset() { store.clear(); open_fail_count = 0; }
+  bool namespaceExists(const std::string& ns) const {
+    for (const auto& kv : store)
+      if (kv.first.rfind(ns + "/", 0) == 0) return true;
+    return false;
+  }
 };
 extern MockNvs g_nvs;
 
 class Preferences {
  public:
-  bool begin(const char* ns, bool /*read_only*/ = false) {
+  bool begin(const char* ns, bool read_only = false) {
     if (g_nvs.open_fail_count > 0) { --g_nvs.open_fail_count; return false; }
-    ns_ = ns; open_ = true; return true;
+    // Real NVS refuses a read-only open of a namespace that does not exist yet
+    // -- the factory-fresh first-boot path.
+    if (read_only && !g_nvs.namespaceExists(ns)) return false;
+    ns_ = ns; read_only_ = read_only; open_ = true; return true;
   }
   void end() { open_ = false; }
   bool isKey(const char* k) { return g_nvs.store.count(key(k)) != 0; }
@@ -32,6 +40,9 @@ class Preferences {
  private:
   std::string key(const char* k) const { return ns_ + "/" + k; }
   void put(const char* k, const void* p, size_t n) {
+    // Real Preferences silently no-ops on a handle that failed to open or was
+    // opened read-only -- which is how an unchecked begin() loses data.
+    if (!open_ || read_only_) return;
     g_nvs.store[key(k)] = std::string(static_cast<const char*>(p), n);
   }
   template <typename T> T get(const char* k, T d) {
@@ -41,4 +52,5 @@ class Preferences {
   }
   std::string ns_;
   bool open_ = false;
+  bool read_only_ = false;
 };

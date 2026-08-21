@@ -10,13 +10,29 @@
 
 using namespace ui::radar;
 
-void setUp() { g_nvs.reset(); mockSetMs(1000); }
+/**
+ * The suites include the shipped .cpp files, so their file-statics persist
+ * across tests. Without an explicit reset a test can pass because of what the
+ * previous one left behind -- give each one a known starting state.
+ */
+static void resetSettingsState() {
+  g_nvs.reset();
+  services::location::clear();          // restores the compiled-in defaults
+  Preferences seed;                     // create the namespace so rangeInit()
+  seed.begin("planeradar", false);      // takes its normal (not first-boot) path
+  seed.putUChar("rangeIdx", 0);
+  seed.end();
+  ui::radar::rangeInit();
+}
+
+void setUp() { mockSetMs(1000); resetSettingsState(); }
 void tearDown() {}
 
 // ---------------- range presets ----------------
 
 static void test_presets_are_sorted_and_labelled_uniquely() {
-  TEST_ASSERT_EQUAL_INT(5, (int)kRangePresetCount);
+  TEST_ASSERT_TRUE_MESSAGE(kRangePresetCount >= 2 && kRangePresetCount <= 8,
+      "the BOOT-tap cycle has to stay short enough to be usable");
   char km[12], mi[12];
   const char* seen_km[8]; const char* seen_mi[8];
   static char kmbuf[8][12], mibuf[8][12];
@@ -53,8 +69,17 @@ static void test_label_buffer_is_never_overrun() {
   TEST_ASSERT_TRUE(strlen(b) < sizeof(b));
 }
 
+static void test_one_tap_advances_exactly_one_preset() {
+  for (size_t i = 0; i + 1 < kRangePresetCount; ++i) {
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRangePresets[i].ring3_km, rangeCurrent().ring3_km,
+                                    "unexpected starting preset");
+    rangeNext();
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRangePresets[i + 1].ring3_km, rangeCurrent().ring3_km,
+                                    "one tap must move to the very next preset");
+  }
+}
+
 static void test_tap_cycles_and_wraps() {
-  rangeInit();
   const float first = rangeCurrent().ring3_km;
   for (size_t i = 0; i < kRangePresetCount; ++i) rangeNext();
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(first, rangeCurrent().ring3_km,
@@ -62,7 +87,7 @@ static void test_tap_cycles_and_wraps() {
 }
 
 static void test_preset_survives_a_reboot() {
-  rangeInit(); rangeNext(); rangeNext();
+  rangeNext(); rangeNext();
   const float chosen = rangeCurrent().ring3_km;
   rangeInit();                                   // simulate a power cycle
   TEST_ASSERT_EQUAL_FLOAT(chosen, rangeCurrent().ring3_km);
@@ -70,6 +95,21 @@ static void test_preset_survives_a_reboot() {
 
 // The 20 km preset was inserted mid-array, so a saved index means a different
 // distance than it did before. Out-of-range indices must clamp, not crash.
+// On a factory-fresh device the namespace does not exist, so the read-only
+// open in rangeInit() fails and the compiled-in defaults stand.
+static void test_first_boot_with_empty_nvs_uses_defaults() {
+  g_nvs.reset();
+  rangeInit();                                   // fresh-NVS path
+  TEST_ASSERT_FALSE_MESSAGE(g_nvs.namespaceExists("planeradar"),
+      "a failed read-only open must not create the namespace as a side effect");
+  TEST_ASSERT_TRUE_MESSAGE(rangeCurrent().ring3_km > 0.0f,
+                           "a first boot must still produce a usable range");
+  // The first tap is what creates the namespace.
+  rangeNext();
+  TEST_ASSERT_TRUE_MESSAGE(g_nvs.namespaceExists("planeradar"),
+                           "the first save must create the namespace");
+}
+
 static void test_saved_index_out_of_range_falls_back_to_default() {
   Preferences p; p.begin("planeradar", false); p.putUChar("rangeIdx", 200); p.end();
   rangeInit();
@@ -78,7 +118,6 @@ static void test_saved_index_out_of_range_falls_back_to_default() {
 }
 
 static void test_fetch_radius_exceeds_the_ring_so_rim_dots_have_data() {
-  rangeInit();
   for (size_t i = 0; i < kRangePresetCount; ++i) {
     TEST_ASSERT_TRUE_MESSAGE(fetchRadiusKm() > rangeCurrent().outer_km,
         "fetch must reach past the outer ring or beyond-ring dots have no source");
@@ -96,22 +135,38 @@ static void test_checkbox_parsing() {
   TEST_ASSERT_TRUE(portalCheckboxChecked("on"));
 }
 
-static void test_units_and_runways_round_trip_and_reset() {
-  rangeInit();
-  saveMilesFromPortal("T");   TEST_ASSERT_TRUE(useMiles());
-  saveMilesFromPortal("");    TEST_ASSERT_FALSE(useMiles());
-  saveRunwaysFromPortal("");  TEST_ASSERT_FALSE(showRunways());
-  saveRunwaysFromPortal("T"); TEST_ASSERT_TRUE(showRunways());
-  rangeInit();                                   // persisted?
-  TEST_ASSERT_TRUE(showRunways());
+// Both toggles are checked at their NON-default value, and against the NVS
+// store itself -- asserting a value that equals the default would pass whether
+// or not anything was ever written.
+static void test_units_and_runways_are_actually_persisted() {
+  saveMilesFromPortal("T");                       // default is km
+  saveRunwaysFromPortal("");                      // default is ON
+  TEST_ASSERT_TRUE(useMiles());
+  TEST_ASSERT_FALSE(showRunways());
+  TEST_ASSERT_TRUE_MESSAGE(g_nvs.store.count("planeradar/useMiles"),
+                           "miles must reach NVS, not just the runtime value");
+  TEST_ASSERT_TRUE_MESSAGE(g_nvs.store.count("planeradar/showRwys"),
+                           "runway toggle must reach NVS");
+  rangeInit();                                    // reload from storage
+  TEST_ASSERT_TRUE_MESSAGE(useMiles(), "miles must survive a reboot");
+  TEST_ASSERT_FALSE_MESSAGE(showRunways(), "runways-off must survive a reboot");
+}
+
+static void test_reset_restores_both_toggles_and_clears_storage() {
+  saveMilesFromPortal("T");
+  saveRunwaysFromPortal("");
   unitsReset();
-  TEST_ASSERT_FALSE(useMiles());
-  TEST_ASSERT_TRUE_MESSAGE(showRunways(), "runways default back ON after a reset");
+  TEST_ASSERT_FALSE_MESSAGE(useMiles(), "reset returns to km");
+  TEST_ASSERT_TRUE_MESSAGE(showRunways(), "reset returns runways to ON");
+  TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("planeradar/useMiles"),
+                            "reset must remove the key, not just the value");
+  TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("planeradar/showRwys"),
+                            "reset must remove the key, not just the value");
 }
 
 // A BOOT-hold reset clears units and runways but NOT the range preset.
 static void test_reset_preserves_the_range_preset() {
-  rangeInit(); rangeNext(); rangeNext();
+  rangeNext(); rangeNext();
   const float chosen = rangeCurrent().ring3_km;
   unitsReset();
   rangeInit();
@@ -119,10 +174,23 @@ static void test_reset_preserves_the_range_preset() {
       "documented behaviour: a credential reset leaves the range alone");
 }
 
-static void test_nvs_open_failure_is_survivable() {
-  g_nvs.open_fail_count = 99;                    // every begin() fails
-  rangeInit(); rangeNext(); saveMilesFromPortal("T");
-  TEST_ASSERT_TRUE_MESSAGE(rangeCurrent().ring3_km > 0.0f, "must not crash or corrupt state");
+// A failed NVS open makes putX() a silent no-op on real hardware, so an
+// unchecked begin() reports "saved" while the coordinates vanish on reboot.
+static void test_location_save_reports_nvs_failure() {
+  g_nvs.open_fail_count = 99;
+  TEST_ASSERT_FALSE_MESSAGE(services::location::saveFromStrings("41.0", "-4.0"),
+      "a save that did not reach NVS must not report success");
+  TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(41.0, services::location::lat(),
+      "the runtime value should still apply for this session");
+  TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("radar/lat"), "nothing should be stored");
+}
+
+static void test_nvs_open_failure_leaves_the_button_working() {
+  const float before = rangeCurrent().ring3_km;
+  g_nvs.open_fail_count = 99;
+  rangeNext();
+  TEST_ASSERT_TRUE_MESSAGE(rangeCurrent().ring3_km != before,
+      "the range must still change even when it cannot be saved");
 }
 
 // ---------------- location ----------------
@@ -180,14 +248,18 @@ int main(int, char**) {
   RUN_TEST(test_presets_are_sorted_and_labelled_uniquely);
   RUN_TEST(test_labels_render_expected_text);
   RUN_TEST(test_label_buffer_is_never_overrun);
+  RUN_TEST(test_one_tap_advances_exactly_one_preset);
   RUN_TEST(test_tap_cycles_and_wraps);
   RUN_TEST(test_preset_survives_a_reboot);
+  RUN_TEST(test_first_boot_with_empty_nvs_uses_defaults);
   RUN_TEST(test_saved_index_out_of_range_falls_back_to_default);
   RUN_TEST(test_fetch_radius_exceeds_the_ring_so_rim_dots_have_data);
   RUN_TEST(test_checkbox_parsing);
-  RUN_TEST(test_units_and_runways_round_trip_and_reset);
+  RUN_TEST(test_units_and_runways_are_actually_persisted);
+  RUN_TEST(test_reset_restores_both_toggles_and_clears_storage);
   RUN_TEST(test_reset_preserves_the_range_preset);
-  RUN_TEST(test_nvs_open_failure_is_survivable);
+  RUN_TEST(test_location_save_reports_nvs_failure);
+  RUN_TEST(test_nvs_open_failure_leaves_the_button_working);
   RUN_TEST(test_location_defaults_before_anything_is_saved);
   RUN_TEST(test_location_round_trips_through_nvs);
   RUN_TEST(test_location_rejects_bad_input_and_keeps_the_old_value);

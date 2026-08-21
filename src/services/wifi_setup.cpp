@@ -279,8 +279,11 @@ void startStaConnect(const String& ssid, const String& pass) {
 }
 
 bool waitForLinkWithUi(const char* ssid_for_ui, unsigned long attempt_ms) {
-  const unsigned long deadline = millis() + attempt_ms;
-  while (millis() < deadline) {
+  // Elapsed-since-start, not a precomputed deadline: millis() is 32-bit and
+  // wraps every 49.7 days, and `millis() < start + attempt_ms` exits instantly
+  // across that boundary -- aborting every connect attempt for the duration.
+  const unsigned long started = millis();
+  while (millis() - started < attempt_ms) {
     if (wifiLinkUp()) {
       return true;
     }

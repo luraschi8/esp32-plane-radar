@@ -35,7 +35,11 @@ class HTTPClient {
   void setConnectTimeout(int) {}
   int GET() {
     ++g_http.get_calls;
-    if (g_http.fail_first_n_gets > 0) { --g_http.fail_first_n_gets; return HTTPC_ERROR_CONNECTION_REFUSED; }
+    if (g_http.fail_first_n_gets > 0) {
+      --g_http.fail_first_n_gets;
+      return HTTPC_ERROR_CONNECTION_REFUSED;   // no socket was ever opened
+    }
+    if (auto* s = dynamic_cast<WiFiClientSecure*>(client_)) s->connectSocket();
     return g_http.code;
   }
   int getSize() const {

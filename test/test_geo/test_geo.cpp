@@ -35,35 +35,53 @@ static void test_longitude_scaled_by_cos_latitude() {
 }
 
 // --- checked against the API's own dst/dir for 14 real aircraft ---
-static void test_matches_api_ground_truth() {
-  setCenter(kFixtureCenterLat, kFixtureCenterLon);
-  for (int i = 0; i < kGeoFixtureCount; ++i) {
-    const GeoFixture& f = kGeoFixtures[i];
+static void checkAgainstApi(const char* set, double clat, double clon,
+                            const GeoFixture* fx, int n) {
+  setCenter(clat, clon);
+  for (int i = 0; i < n; ++i) {
+    const GeoFixture& f = fx[i];
     float dx = 0, dy = 0, dist = 0;
     offsetKmFromCenter(f.lat, f.lon, &dx, &dy, &dist);
     const float dist_nm = dist / 1.852f;
     const float bearing = fmodf(atan2f(dx, dy) * 57.2957795f + 360.0f, 360.0f);
-    char msg[96];
-    snprintf(msg, sizeof(msg), "fixture %d distance: api=%.3f ours=%.3f", i, f.dst_nm, dist_nm);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s[%d] distance: api=%.3f ours=%.3f NM", set, i, f.dst_nm, dist_nm);
     TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, f.dst_nm, dist_nm, msg);
-    snprintf(msg, sizeof(msg), "fixture %d bearing: api=%.2f ours=%.2f", i, f.dir_deg, bearing);
-    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.6f, f.dir_deg, bearing, msg);
+    // Bearings straddle 0/360, so compare the shortest angular difference.
+    float diff = fmodf(fabsf(bearing - f.dir_deg), 360.0f);
+    if (diff > 180.0f) diff = 360.0f - diff;
+    snprintf(msg, sizeof(msg), "%s[%d] bearing: api=%.2f ours=%.2f deg", set, i, f.dir_deg, bearing);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.6f, 0.0f, diff, msg);
   }
 }
 
+static void test_matches_api_ground_truth() {
+  checkAgainstApi("madrid", kMadridLat, kMadridLon, kMadridFixtures, kMadridFixtureCount);
+  checkAgainstApi("amsterdam", kAmsterdamLat, kAmsterdamLon, kAmsterdamFixtures,
+                  kAmsterdamFixtureCount);
+}
+
 // --- a flat 111 km/deg would fail the same fixtures: proves the test has teeth ---
-static void test_ground_truth_would_reject_uncorrected_projection() {
-  setCenter(kFixtureCenterLat, kFixtureCenterLon);
-  int would_fail = 0;
-  for (int i = 0; i < kGeoFixtureCount; ++i) {
-    const GeoFixture& f = kGeoFixtures[i];
-    const float dx_bad = (f.lon - (float)kFixtureCenterLon) * 111.0f;  // no cos()
-    const float dy = (f.lat - (float)kFixtureCenterLat) * 111.0f;
-    const float bad_nm = sqrtf(dx_bad * dx_bad + dy * dy) / 1.852f;
-    if (fabsf(bad_nm - f.dst_nm) > 0.05f) ++would_fail;
+// The fixtures must be tight enough that a WRONG projection is rejected. This
+// runs the real code with a deliberately wrong centre latitude (which changes
+// only the cos scale) and requires the ground-truth check to reject it.
+static void test_fixtures_reject_a_wrong_longitude_scale() {
+  int mismatches = 0;
+  setCenter(kAmsterdamLat, kAmsterdamLon);
+  for (int i = 0; i < kAmsterdamFixtureCount; ++i) {
+    const GeoFixture& f = kAmsterdamFixtures[i];
+    float dx = 0, dy = 0, dist = 0;
+    offsetKmFromCenter(f.lat, f.lon, &dx, &dy, &dist);
+    const float good = fabsf(dist / 1.852f - f.dst_nm);
+    // Same maths, equator scale (cos = 1): what the original bug computed.
+    const float dx_bad = (f.lon - (float)kAmsterdamLon) * 111.0f;
+    const float bad = fabsf(sqrtf(dx_bad * dx_bad + dy * dy) / 1.852f - f.dst_nm);
+    TEST_ASSERT_TRUE_MESSAGE(good <= 0.05f, "the real projection must match");
+    if (bad > 0.05f) ++mismatches;
   }
-  TEST_ASSERT_EQUAL_MESSAGE(kGeoFixtureCount, would_fail,
-                            "uncorrected projection must fail every fixture");
+  TEST_ASSERT_EQUAL_MESSAGE(kAmsterdamFixtureCount, mismatches,
+      "every fixture must reject an uncorrected longitude scale, or the "
+      "tolerance is too loose to detect the original bug");
 }
 
 static void test_antimeridian_east_is_not_west() {
@@ -71,7 +89,7 @@ static void test_antimeridian_east_is_not_west() {
   float dx = 0, dy = 0, dist = 0;
   offsetKmFromCenter(0.0f, -179.95f, &dx, &dy, &dist);
   TEST_ASSERT_TRUE_MESSAGE(dx > 0.0f, "target east of the antimeridian must read east");
-  TEST_ASSERT_FLOAT_WITHIN(2.0f, 11.1f, dx);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, 11.1f, dx, "0.1 deg at the equator is 11.1 km");
   TEST_ASSERT_TRUE_MESSAGE(dist < 50.0f, "must not read as most of the way round the planet");
 }
 
@@ -80,7 +98,7 @@ static void test_antimeridian_west_direction() {
   float dx = 0, dy = 0, dist = 0;
   offsetKmFromCenter(0.0f, 179.95f, &dx, &dy, &dist);
   TEST_ASSERT_TRUE_MESSAGE(dx < 0.0f, "target west of the antimeridian must read west");
-  TEST_ASSERT_FLOAT_WITHIN(2.0f, 11.1f, fabsf(dx));
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, 11.1f, fabsf(dx), "0.1 deg at the equator is 11.1 km");
 }
 
 static void test_cos_cache_invalidates_when_centre_moves() {
@@ -92,7 +110,7 @@ static void test_cos_cache_invalidates_when_centre_moves() {
   setCenter(60.0, 0.0);                      // cos(60) = 0.5
   float dx_60 = 0;
   offsetKmFromCenter(60.0f, 1.0f, &dx_60, &dy, &dist);
-  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1.0f, 55.5f, dx_60,
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.1f, 55.5f, dx_60,
                                    "stale cos cache would still report ~111 km");
 }
 
@@ -117,11 +135,15 @@ static void test_centre_maps_to_screen_centre_and_north_is_up() {
 }
 
 static void test_px_per_km_tracks_the_range_preset() {
+  // Independently computed: the 10 km preset is 13.333 km outer over a 107 px
+  // grid radius = 8.025 px/km. Restating the implementation would prove nothing.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 8.025f, pxPerKm(),
+                                   "10 km preset: 107 px / 13.333 km");
   const float at_default = pxPerKm();
   rangeNext();                                 // 10 km -> 15 km
   TEST_ASSERT_TRUE_MESSAGE(pxPerKm() < at_default,
                            "a wider range must map fewer pixels per km");
-  TEST_ASSERT_FLOAT_WITHIN(0.01f, (float)kGridOuterRadius / rangeCurrent().outer_km, pxPerKm());
+
 }
 
 static void test_clip_pulls_point_inside_the_outer_ring() {
@@ -145,7 +167,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_longitude_scaled_by_cos_latitude);
   RUN_TEST(test_matches_api_ground_truth);
-  RUN_TEST(test_ground_truth_would_reject_uncorrected_projection);
+  RUN_TEST(test_fixtures_reject_a_wrong_longitude_scale);
   RUN_TEST(test_antimeridian_east_is_not_west);
   RUN_TEST(test_antimeridian_west_direction);
   RUN_TEST(test_cos_cache_invalidates_when_centre_moves);

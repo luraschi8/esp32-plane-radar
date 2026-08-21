@@ -294,11 +294,15 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
-  // From here a socket/TLS session may exist, so a stop() is meaningful.
-  s_session_open = true;
 
   http.setTimeout(kRequestTimeoutMs);
   const int code = performGetWithRetry(http);
+  // Only now can a socket exist. Setting this at begin() time meant a failed
+  // connect still armed the teardown, and ssl_client leaves socket == 0 after
+  // its own cleanup -- so the redundant stop() would close fd 0.
+  if (code > 0) {
+    s_session_open = true;
+  }
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
@@ -324,7 +328,24 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (err) {
     Serial.printf("adsb: JSON parse error: %s (heap=%u largest=%u)\n",
                   err.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    s_client.stop();
+    stopSession();
+    return false;
+  }
+
+  // A filter makes ArduinoJson SKIP everything it does not want, so a body that
+  // is not the API at all -- an HTML error page, a bare `null`, a number --
+  // parses "Ok" into an empty document. Left unchecked that reads as an empty
+  // sky: real traffic is wiped from the panel, and s_last_update_ms is
+  // refreshed so the 60 s expiry never fires either. Insist on the shape.
+  if (!doc.is<JsonObject>()) {
+    Serial.println("adsb: response is not a JSON object");
+    stopSession();
+    return false;
+  }
+  JsonVariantConst ac_field = doc["ac"];
+  if (!ac_field.isNull() && !ac_field.is<JsonArrayConst>()) {
+    Serial.println("adsb: 'ac' is not an array");
+    stopSession();
     return false;
   }
 
@@ -333,7 +354,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (ac.isNull()) {
-    publish(back, 0);
+    publish(back, 0);   // a genuine empty sky
     return true;
   }
 

@@ -61,7 +61,10 @@ static void test_real_payload_parses_every_aircraft() {
                                 "every airborne record should survive the filter");
   const Aircraft* a = aircraftList();
   for (size_t i = 0; i < aircraftCount(); ++i) {
-    TEST_ASSERT_TRUE_MESSAGE(a[i].lat != 0.0f, "position must be populated");
+    TEST_ASSERT_TRUE_MESSAGE(a[i].lat > 30.0f && a[i].lat < 60.0f,
+                             "latitude must be the payload's, not garbage");
+    TEST_ASSERT_TRUE_MESSAGE(a[i].lon > -20.0f && a[i].lon < 20.0f,
+                             "longitude must be the payload's, not garbage");
     TEST_ASSERT_TRUE_MESSAGE(a[i].callsign[0] != '\0', "every target needs an identity");
   }
 }
@@ -181,10 +184,43 @@ static void test_age_is_zero_before_the_first_fetch() {
 static void test_http_error_does_not_publish_and_drops_the_session() {
   fetch(kAirbornePayload());
   const size_t before = aircraftCount();
+  g_tls = MockTlsStats();
   TEST_ASSERT_FALSE(fetch(kAirbornePayload(), 429));
   TEST_ASSERT_EQUAL_INT_MESSAGE((int)before, (int)aircraftCount(),
       "a failed fetch must leave the previous list intact");
-  TEST_ASSERT_TRUE_MESSAGE(g_tls.stop > 0, "an error must drop the TLS session");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop,
+      "exactly one teardown: a second stop() on a torn-down client closes fd 0");
+}
+
+// Keep-alive is the whole point of the file-scope client: a success that tears
+// the session down reintroduces the ~33 KB per-cycle reallocation.
+static void test_success_keeps_the_session_open() {
+  g_tls = MockTlsStats();
+  TEST_ASSERT_TRUE(fetch(kAirbornePayload()));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_tls.stop,
+      "a successful fetch must NOT drop the connection");
+}
+
+// Every error path must route through stopSession(), or the open/closed flag
+// desynchronises and the next teardown double-stops.
+static void test_every_error_path_stops_exactly_once() {
+  const struct { const char* what; const char* body; int code; } cases[] = {
+      {"http error", nullptr, 429},
+      {"garbage body", "definitely not json", HTTP_CODE_OK},
+      {"truncated body", "{\"ac\":[{\"lat\":40.1,\"lon\":-3.1", HTTP_CODE_OK},
+  };
+  for (const auto& c : cases) {
+    fetch(kAirbornePayload());              // re-open a session
+    g_tls = MockTlsStats();
+    fetch(c.body ? c.body : kAirbornePayload(), c.code);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "%s: expected exactly one stop", c.what);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop, msg);
+    // A follow-up teardown must be a no-op: the session is already closed.
+    stopSession();
+    snprintf(msg, sizeof(msg), "%s: a redundant teardown must be suppressed", c.what);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop, msg);
+  }
 }
 
 static void test_truncated_body_is_rejected_rather_than_half_parsed() {
@@ -198,6 +234,33 @@ static void test_truncated_body_is_rejected_rather_than_half_parsed() {
 
 static void test_garbage_body_is_rejected() {
   TEST_ASSERT_FALSE(fetch("not json at all"));
+}
+
+// A filter makes ArduinoJson skip what it does not want, so a non-API body can
+// parse "Ok" into an empty document. Treating that as an empty sky wipes real
+// traffic off the panel AND refreshes the update timestamp, so the 60 s expiry
+// never fires: the radar sits blank while looking healthy.
+static void test_non_api_bodies_are_not_mistaken_for_an_empty_sky() {
+  const char* bodies[] = {"<html>502 Bad Gateway</html>", "null", "12345",
+                          "[1,2,3]", "definitely not json"};
+  for (const char* b : bodies) {
+    fetch(kAirbornePayload());
+    const size_t good = aircraftCount();
+    TEST_ASSERT_TRUE(good > 0);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "body %s must be rejected, not read as 'no aircraft'", b);
+    TEST_ASSERT_FALSE_MESSAGE(fetch(b), msg);
+    snprintf(msg, sizeof(msg), "body %s must leave the last good list intact", b);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)good, (int)aircraftCount(), msg);
+  }
+}
+
+// ...but a real empty sky must still clear the panel.
+static void test_a_genuine_empty_response_still_clears() {
+  fetch(kAirbornePayload());
+  TEST_ASSERT_TRUE(aircraftCount() > 0);
+  TEST_ASSERT_TRUE(fetch("{\"ac\":[],\"msg\":\"No error\",\"total\":0}"));
+  TEST_ASSERT_EQUAL_INT(0, (int)aircraftCount());
 }
 
 static void test_missing_ac_key_is_survivable() {
@@ -220,8 +283,35 @@ static void test_retries_are_capped() {
   g_http.body = kAirbornePayload();
   g_http.fail_first_n_gets = 99;
   fetchUpdate(40.4, -3.6, 30.0f);
-  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(3, g_http.get_calls,
-      "must not hammer an API documented at 1 req/s");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, g_http.get_calls,
+      "exactly the cap: fewer means no retry at all, more means a storm "
+      "against an API documented at 1 req/s");
+}
+
+// The teardown flag must only be armed once a socket really exists. Armed at
+// begin() time, a connect that never succeeded still triggers stop(), and
+// ssl_client leaves socket == 0 after its own cleanup -- so that stop() is a
+// close(0) on the console descriptor.
+static void test_a_failed_connect_never_closes_fd0() {
+  g_http.reset();
+  g_http.body = kAirbornePayload();
+  g_http.fail_first_n_gets = 99;          // every attempt refused: no socket
+  g_tls = MockTlsStats();
+  TEST_ASSERT_FALSE(fetchUpdate(40.4, -3.6, 30.0f));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_tls.close_of_fd0,
+      "tearing down a connection that was never opened closes fd 0");
+}
+
+// And after a real connection, exactly one teardown -- never two.
+static void test_error_after_a_real_connection_stops_once_only() {
+  fetch(kAirbornePayload());               // opens a session
+  g_tls = MockTlsStats();
+  TEST_ASSERT_FALSE(fetch("<html>502</html>"));
+  TEST_ASSERT_EQUAL_INT(1, g_tls.stop);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_tls.close_of_fd0, "first stop had a real fd");
+  stopSession();                           // a later link-down
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop, "suppressed: already closed");
+  TEST_ASSERT_EQUAL_INT(0, g_tls.close_of_fd0);
 }
 
 static void test_a_transient_failure_still_succeeds_within_the_cap() {
@@ -266,11 +356,17 @@ int main(int, char**) {
   RUN_TEST(test_data_expires_and_hides_traffic);
   RUN_TEST(test_a_successful_fetch_revives_expired_data);
   RUN_TEST(test_http_error_does_not_publish_and_drops_the_session);
+  RUN_TEST(test_success_keeps_the_session_open);
+  RUN_TEST(test_every_error_path_stops_exactly_once);
   RUN_TEST(test_truncated_body_is_rejected_rather_than_half_parsed);
   RUN_TEST(test_garbage_body_is_rejected);
+  RUN_TEST(test_non_api_bodies_are_not_mistaken_for_an_empty_sky);
+  RUN_TEST(test_a_genuine_empty_response_still_clears);
   RUN_TEST(test_empty_ac_array_publishes_zero_not_stale_traffic);
   RUN_TEST(test_missing_ac_key_is_survivable);
   RUN_TEST(test_retries_are_capped);
+  RUN_TEST(test_a_failed_connect_never_closes_fd0);
+  RUN_TEST(test_error_after_a_real_connection_stops_once_only);
   RUN_TEST(test_a_transient_failure_still_succeeds_within_the_cap);
   RUN_TEST(test_aircraft_cap_is_respected);
   return UNITY_END();

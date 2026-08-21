@@ -35,16 +35,25 @@ bool validLatLon(double lat, double lon) {
   return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
 }
 
-void persist(double lat, double lon) {
+/** False when NVS refused the write; the runtime value is still updated. */
+bool persist(double lat, double lon) {
   Preferences prefs;
-  prefs.begin(kPrefsNamespace, false);
-  prefs.putDouble(kKeyLat, lat);
-  prefs.putDouble(kKeyLon, lon);
-  prefs.end();
+  // putDouble() is a silent no-op on a handle that failed to open, so an
+  // unchecked begin() meant the portal reported "saved" while the coordinates
+  // were lost on the next reboot.
+  const bool opened = prefs.begin(kPrefsNamespace, false);
+  if (opened) {
+    prefs.putDouble(kKeyLat, lat);
+    prefs.putDouble(kKeyLon, lon);
+    prefs.end();
+  } else {
+    Serial.println("radar: NVS unavailable — location not persisted");
+  }
   portENTER_CRITICAL(&s_coord_mux);
   s_lat = lat;
   s_lon = lon;
   portEXIT_CRITICAL(&s_coord_mux);
+  return opened;
 }
 
 }  // namespace
@@ -83,7 +92,10 @@ bool saveFromStrings(const char* lat_str, const char* lon_str) {
   if (!validLatLon(lat, lon)) {
     return false;
   }
-  persist(lat, lon);
+  if (!persist(lat, lon)) {
+    Serial.printf("Radar location applied but NOT saved: %.6f, %.6f\n", lat, lon);
+    return false;
+  }
   Serial.printf("Radar location saved: %.6f, %.6f\n", lat, lon);
   return true;
 }
