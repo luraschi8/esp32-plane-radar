@@ -94,6 +94,8 @@ extern uint16_t kColorGrid;
 extern uint16_t kColorLabel;
 extern uint16_t kColorCenter;
 extern uint16_t kColorAircraft;
+/** Dimmed symbol for targets whose position is older than the DR horizon. */
+extern uint16_t kColorAircraftStale;
 extern uint16_t kColorTrackVector;
 extern uint16_t kColorTagType;
 extern uint16_t kColorTagAltitude;

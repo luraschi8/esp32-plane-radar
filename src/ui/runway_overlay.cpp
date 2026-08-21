@@ -124,7 +124,7 @@ struct CachedLabel {
   uint16_t airport_idx;
 };
 
-constexpr size_t kMaxCachedSegments = 64;
+constexpr size_t kMaxCachedSegments = 96;
 
 CachedSegment s_segments[kMaxCachedSegments];
 size_t s_segment_count = 0;
@@ -247,9 +247,12 @@ void rebuildCache() {
     if (!computeRunwayLine(rw, &x0, &y0, &x1, &y1)) {
       continue;
     }
+    // Cap the strips but keep scanning: the dataset is ordered by ICAO, not by
+    // distance, so abandoning the sweep here would drop whichever airports
+    // happen to sort late -- possibly the nearest one -- along with its label.
     if (s_segment_count >= kMaxCachedSegments) {
       truncated = true;
-      break;
+      continue;
     }
     s_segments[s_segment_count++] = {
         static_cast<int16_t>(x0), static_cast<int16_t>(y0),
@@ -265,7 +268,7 @@ void rebuildCache() {
   }
 
   if (truncated) {
-    Serial.printf("runway: cache full, dropped strips beyond %u\n",
+    Serial.printf("runway: strip cache full at %u; labels still collected\n",
                   static_cast<unsigned>(kMaxCachedSegments));
   }
 

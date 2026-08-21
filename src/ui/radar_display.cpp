@@ -24,6 +24,7 @@ uint16_t kColorGrid = 0x0320;
 uint16_t kColorLabel = 0xFFFF;
 uint16_t kColorCenter = 0xFFFF;
 uint16_t kColorAircraft = 0x001F;
+uint16_t kColorAircraftStale = 0x000A;
 uint16_t kColorTrackVector = 0xFFFF;
 uint16_t kColorTagType = 0x5DFF;
 uint16_t kColorTagAltitude = 0xFFE0;
@@ -171,6 +172,17 @@ void initPalette() {
   } else {
     radar::kColorAircraft =
         tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
+  }
+  // Same hue as a live target at ~35% brightness, so a stale contact reads as
+  // present-but-unreliable rather than as ordinary traffic.
+  if (config::kDisplayRgbOrder) {
+    radar::kColorAircraftStale = tft.color565(radar::kAircraftB / 3,
+                                              radar::kAircraftG / 3,
+                                              radar::kAircraftR / 3);
+  } else {
+    radar::kColorAircraftStale = tft.color565(radar::kAircraftR / 3,
+                                              radar::kAircraftG / 3,
+                                              radar::kAircraftB / 3);
   }
   radar::kColorTrackVector =
       tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
@@ -432,6 +444,7 @@ struct AircraftDrawItem {
   int x = 0;
   int y = 0;
   int dist_sq = 0;
+  bool stale = false;
 };
 
 struct BeyondDotDrawItem {
@@ -501,8 +514,14 @@ bool drawAircraft() {
     // Positions arrive stale by their own seen_pos, so advance from when the
     // fix was taken. This also makes a repeated stale position continuous
     // instead of snapping the target backwards.
-    const float age_s = std::min(planes[i].pos_age_s + fetch_age_s,
-                                 kMaxExtrapolationSec);
+    // If the fix itself is already older than the horizon, extrapolating it
+    // would pin the target at the cap: drawn a fixed distance ahead of a fix of
+    // unknown age and then perfectly still. Show the reported position instead
+    // and dim it, so it reads as stale rather than as confidently wrong.
+    const bool stale = planes[i].pos_age_s >= kMaxExtrapolationSec;
+    const float age_s =
+        stale ? 0.0f
+              : std::min(planes[i].pos_age_s + fetch_age_s, kMaxExtrapolationSec);
     dx_km += planes[i].vel_e_km_s * age_s;
     dy_km += planes[i].vel_n_km_s * age_s;
     dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);
@@ -515,6 +534,7 @@ bool drawAircraft() {
       items[draw_count].x = x;
       items[draw_count].y = y;
       items[draw_count].dist_sq = radar::distSqFromCenter(x, y);
+      items[draw_count].stale = stale;
       ++draw_count;
       continue;
     }
@@ -542,7 +562,9 @@ bool drawAircraft() {
     const int y = items[d].y;
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots, radar::kColorTrackVector);
-    drawHeadingTriangle(x, y, planes[i].nose_deg, radar::kColorAircraft);
+    drawHeadingTriangle(x, y, planes[i].nose_deg,
+                        items[d].stale ? radar::kColorAircraftStale
+                                       : radar::kColorAircraft);
   }
   // items[] is sorted far-first; walk it backwards so the closest aircraft
   // claim their tag position before more distant ones.
@@ -619,6 +641,10 @@ void drawRings(int cx, int cy, int outer_radius) {
 // drawWideLine without its per-pixel alpha blending, which measured 25.9 ms
 // per frame for these two lines alone (24% of the whole frame).
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
+  // An even-width bar cannot straddle a single pixel column, so a 2 px stroke
+  // is always 1 px off centre one way or the other; the anti-aliased line this
+  // replaced hid that with alpha across 3 px. Bias both spokes the same way so
+  // the asymmetry is consistent rather than mixed.
   const int thickness =
       std::max(1, static_cast<int>(radar::kGridStrokeHalfWidth * 2.0f));
   const int offset = thickness / 2;
