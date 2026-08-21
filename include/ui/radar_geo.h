@@ -17,6 +17,9 @@ void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
 /** Screen pixels per km at the active range preset. */
 float pxPerKm();
 
+/** Project a ground-kilometre offset from the radar centre to screen pixels. */
+void kmOffsetToScreen(float dx_km, float dy_km, int* out_x, int* out_y);
+
 /** Project lat/lon to screen pixels (unclipped; may fall outside the panel). */
 void latLonToScreen(float lat, float lon, int* out_x, int* out_y);
 

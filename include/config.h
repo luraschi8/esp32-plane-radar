@@ -50,6 +50,12 @@ constexpr double kDefaultRadarLon = 4.9041;
 
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 3000;
+/**
+ * Redraw interval while waiting for the next fetch. A frame costs ~44 ms, so
+ * 100 ms is ~10 FPS at under half duty, leaving the loop free for the config
+ * portal and the BOOT button.
+ */
+constexpr unsigned long kRenderIntervalMs = 100;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;
 

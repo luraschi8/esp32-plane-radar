@@ -40,6 +40,12 @@ float pxPerKm() {
   return static_cast<float>(kGridOuterRadius) / rangeCurrent().outer_km;
 }
 
+void kmOffsetToScreen(float dx_km, float dy_km, int* out_x, int* out_y) {
+  const float px_per_km = pxPerKm();
+  *out_x = kCenterX + static_cast<int>(lroundf(dx_km * px_per_km));
+  *out_y = kCenterY - static_cast<int>(lroundf(dy_km * px_per_km));
+}
+
 void latLonToScreen(float lat, float lon, int* out_x, int* out_y) {
   const float px_per_km = pxPerKm();
 

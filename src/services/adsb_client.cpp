@@ -21,6 +21,12 @@ constexpr unsigned long kRequestTimeoutMs = 10000;
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
+unsigned long s_last_update_ms = 0;
+
+/** Dead reckoning past this is guesswork, so positions freeze instead. */
+constexpr float kMaxExtrapolationSec = 12.0f;
+constexpr float kDegToRad = 0.01745329252f;
+constexpr float kKnotsToKmPerSec = kKmPerNm / 3600.0f;
 
 void pollNetwork() {
   if (s_poll_fn != nullptr) {
@@ -300,6 +306,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].nose_deg = pickNoseHeading(plane);
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
+    // Resolve the track into east/north components now: it is constant until
+    // the next fetch, and the render loop runs many frames per fetch.
+    const float gs_km_s = s_aircraft[n].gs_knots * kKnotsToKmPerSec;
+    const float track_rad = s_aircraft[n].track_deg * kDegToRad;
+    s_aircraft[n].vel_e_km_s = gs_km_s * sinf(track_rad);
+    s_aircraft[n].vel_n_km_s = gs_km_s * cosf(track_rad);
     float dst = -1.0f;
     s_aircraft[n].dst_nm = readJsonFloat(plane, "dst", &dst) ? dst : -1.0f;
     fillTagFields(&s_aircraft[n], plane);
@@ -307,8 +319,17 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   s_aircraft_count = n;
+  s_last_update_ms = millis();
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
+}
+
+float secondsSinceUpdate() {
+  if (s_last_update_ms == 0) {
+    return 0.0f;
+  }
+  const float age_s = (millis() - s_last_update_ms) / 1000.0f;
+  return age_s > kMaxExtrapolationSec ? kMaxExtrapolationSec : age_s;
 }
 
 }  // namespace services::adsb

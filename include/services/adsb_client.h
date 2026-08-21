@@ -10,6 +10,12 @@ struct Aircraft {
   float nose_deg;
   float track_deg;
   float gs_knots;
+  /**
+   * Ground velocity split into east/north km per second, computed once per
+   * fetch so the render loop can dead-reckon without any trig per frame.
+   */
+  float vel_e_km_s;
+  float vel_n_km_s;
   /** API-computed distance from the radar centre (NM); < 0 if absent. */
   float dst_nm;
   char callsign[9];
@@ -28,5 +34,11 @@ void setPollFn(PollFn fn);
 
 /** Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi. */
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
+
+/**
+ * Seconds since the last successful fetch, clamped so a run of failures cannot
+ * extrapolate an aircraft into fiction. 0 before the first fetch.
+ */
+float secondsSinceUpdate();
 
 }  // namespace services::adsb

@@ -194,26 +194,22 @@ float innerRingMaxKm() {
 
 bool isInsideOuterRingKm(float dist_km) { return dist_km <= innerRingMaxKm(); }
 
-/** Rim dot from true bearing; always on screen edge (even if target is 50+ km away). */
-bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
-  float dx_km = 0.0f;
-  float dy_km = 0.0f;
-  float dist_km = 0.0f;
-  radar::offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
-  if (dist_km < 0.01f) {
-    return false;
-  }
-  if (isInsideOuterRingKm(dist_km)) {
+/**
+ * Rim dot from true bearing; always on the screen edge (even if the target is
+ * 50+ km away). Scaling the offset vector by rim_r/dist gives the same point as
+ * atan2 followed by sin/cos of that angle, without three soft-float trig calls
+ * on a core with no FPU.
+ */
+bool beyondRingEdgeDotFromKm(float dx_km, float dy_km, float dist_km, int* out_x,
+                             int* out_y) {
+  if (dist_km < 0.01f || isInsideOuterRingKm(dist_km)) {
     return false;
   }
 
-  const int cx = radar::kCenterX;
-  const int cy = radar::kCenterY;
   const int rim_r = radar::kCenterX - radar::kBeyondRingScreenMarginPx;
-  const float angle_rad = atan2f(dx_km, dy_km);
-
-  *out_x = cx + static_cast<int>(lroundf(sinf(angle_rad) * rim_r));
-  *out_y = cy - static_cast<int>(lroundf(cosf(angle_rad) * rim_r));
+  const float scale = static_cast<float>(rim_r) / dist_km;
+  *out_x = radar::kCenterX + static_cast<int>(lroundf(dx_km * scale));
+  *out_y = radar::kCenterY - static_cast<int>(lroundf(dy_km * scale));
   return true;
 }
 
@@ -479,16 +475,23 @@ void drawAircraft() {
   size_t draw_count = 0;
   size_t dot_count = 0;
 
+  // Dead reckoning: advance each target along its own ground velocity since the
+  // last fetch, so the picture moves between the (~3 s) network updates.
+  const float age_s = services::adsb::secondsSinceUpdate();
+
   for (size_t i = 0; i < n; ++i) {
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
     radar::offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    dx_km += planes[i].vel_e_km_s * age_s;
+    dy_km += planes[i].vel_n_km_s * age_s;
+    dist_km = sqrtf(dx_km * dx_km + dy_km * dy_km);
 
     if (isInsideOuterRingKm(dist_km)) {
       int x = 0;
       int y = 0;
-      radar::latLonToScreen(planes[i].lat, planes[i].lon, &x, &y);
+      radar::kmOffsetToScreen(dx_km, dy_km, &x, &y);
       items[draw_count].index = i;
       items[draw_count].x = x;
       items[draw_count].y = y;
@@ -499,8 +502,7 @@ void drawAircraft() {
 
     int dot_x = 0;
     int dot_y = 0;
-    if (!beyondRingEdgeDotFromLatLon(planes[i].lat, planes[i].lon, &dot_x,
-                                     &dot_y)) {
+    if (!beyondRingEdgeDotFromKm(dx_km, dy_km, dist_km, &dot_x, &dot_y)) {
       continue;
     }
     dots[dot_count].x = dot_x;
