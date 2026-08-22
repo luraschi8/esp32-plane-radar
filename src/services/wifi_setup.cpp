@@ -282,8 +282,10 @@ bool waitForLinkWithUi(const char* ssid_for_ui, unsigned long attempt_ms) {
   // Elapsed-since-start, not a precomputed deadline: millis() is 32-bit and
   // wraps every 49.7 days, and `millis() < start + attempt_ms` exits instantly
   // across that boundary -- aborting every connect attempt for the duration.
-  const unsigned long started = millis();
-  while (millis() - started < attempt_ms) {
+  // uint32_t, not unsigned long: this comparison is only correct because it
+  // wraps at 2^32 exactly as millis() does. Widening it silently breaks that.
+  const uint32_t started = millis();
+  while (millis() - started < static_cast<uint32_t>(attempt_ms)) {
     if (wifiLinkUp()) {
       return true;
     }

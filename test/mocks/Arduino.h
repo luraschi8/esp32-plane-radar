@@ -8,13 +8,18 @@
 #include <cmath>
 #include <Stream.h>
 
-extern unsigned long g_mock_millis;
-inline unsigned long millis() { return g_mock_millis; }
-inline unsigned long micros() { return g_mock_millis * 1000UL; }
-inline void delay(unsigned long ms) { g_mock_millis += ms; }
+/**
+ * 32-bit like the device (Arduino's millis() is uint32_t there, though
+ * `unsigned long` is 64-bit on this host). Code that stores it in uint32_t
+ * therefore wraps faithfully and its rollover behaviour is testable.
+ */
+extern uint32_t g_mock_millis;
+inline uint32_t millis() { return g_mock_millis; }
+inline uint32_t micros() { return g_mock_millis * 1000U; }
+inline void delay(uint32_t ms) { g_mock_millis += ms; }
 /** Tests drive time explicitly; nothing here advances it on its own. */
-inline void mockAdvanceMs(unsigned long ms) { g_mock_millis += ms; }
-inline void mockSetMs(unsigned long ms) { g_mock_millis = ms; }
+inline void mockAdvanceMs(uint32_t ms) { g_mock_millis += ms; }
+inline void mockSetMs(uint32_t ms) { g_mock_millis = ms; }
 
 struct MockSerial {
   bool capture = false;
@@ -59,3 +64,31 @@ struct MockEsp {
   unsigned getMinFreeHeap() const { return 12340; }
 };
 extern MockEsp ESP;
+
+// --- GPIO / interrupts, driven explicitly by tests ---
+#define INPUT_PULLUP 2
+#define LOW 0
+#define HIGH 1
+#define CHANGE 1
+#define IRAM_ATTR
+struct MockGpio {
+  int level = HIGH;                 // BOOT is active LOW, idle high
+  int isr_attached = 0;
+  void (*isr)() = nullptr;
+  /** Release the button but KEEP the handler: the firmware attaches it once. */
+  void release() { level = HIGH; }
+  void reset() { level = HIGH; isr_attached = 0; isr = nullptr; }
+};
+extern MockGpio g_gpio;
+inline void pinMode(int, int) {}
+inline int digitalRead(int) { return g_gpio.level; }
+inline int digitalPinToInterrupt(int p) { return p; }
+inline void attachInterrupt(int, void (*fn)(), int) { ++g_gpio.isr_attached; g_gpio.isr = fn; }
+#define portENTER_CRITICAL_ISR(m) portENTER_CRITICAL(m)
+#define portEXIT_CRITICAL_ISR(m) portEXIT_CRITICAL(m)
+
+/** Move the button and fire the edge interrupt, as the hardware would. */
+inline void mockBootButton(bool pressed) {
+  g_gpio.level = pressed ? LOW : HIGH;
+  if (g_gpio.isr) g_gpio.isr();
+}
