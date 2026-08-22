@@ -62,7 +62,7 @@ linter or formatter. Verification is: tests pass, it compiles cleanly, it fits, 
 ### 3.0 Unit tests
 
 ```bash
-pio test -e native                 # whole suite (165 tests, 8 suites) in ~5 s
+pio test -e native                 # whole suite (179 tests, 8 suites) in ~4 s
 pio test -e native -f test_geo     # one suite
 ```
 
@@ -97,7 +97,7 @@ The size report at the end of every build is the memory budget. Current baseline
 
 ```
 RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
-Flash: [====      ]  39.7% (used 1247600 bytes from 3145728 bytes)
+Flash: [====      ]  39.7% (used 1247718 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite
@@ -174,7 +174,6 @@ on *when* it is pressed (at power-on = bootloader, while running = app control).
 For handing a build to someone else, or reflashing without PlatformIO:
 
 ```bash
-chmod +x scripts/merge-firmware.sh    # once
 ./scripts/merge-firmware.sh           # build + merge -> release/plane-radar-merged.bin
 ./scripts/merge-firmware.sh --no-build   # merge an existing build only
 ```
@@ -201,7 +200,7 @@ pio run -e supermini -t erase
 
 | Workflow | Trigger | Output |
 |----------|---------|--------|
-| `.github/workflows/build.yml` | push / PR to `main` | artifact `plane-radar-supermini` (merged + split `.bin`, ~90 days) |
+| `.github/workflows/build.yml` | push to `main`/`master`, any PR, manual dispatch; runs `pio test -e native` then builds | artifact `plane-radar-supermini` (merged + split `.bin`, ~90 days) |
 | `.github/workflows/release.yml` | tag `v*` | GitHub Release with `plane-radar-<tag>.bin` + `.sha256` |
 
 ```bash

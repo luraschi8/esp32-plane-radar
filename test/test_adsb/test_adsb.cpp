@@ -392,11 +392,16 @@ static void test_a_tick_while_connected_fetches() {
 // loop() retries startFetchTask() every 10 s while it has not succeeded, so the
 // failure path must be both reportable and leak-free.
 static void test_task_creation_failure_is_reported_and_retryable() {
+  g_mutex_live = 0;
   g_task_create_fail = 1;
   TEST_ASSERT_FALSE_MESSAGE(startFetchTask(), "a failed xTaskCreate must be reported");
-  TEST_ASSERT_TRUE_MESSAGE(startFetchTask(),
-      "the retry must succeed -- the failure path has to release the mutex, or "
-      "every retry strands another one");
+  // Retryability alone proves nothing: startFetchTask() null-checks the mutex,
+  // so it retries fine whether or not the failure path freed it. The live count
+  // is what the message actually claims.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_live,
+      "the failure path must free the mutex it just created, or every retry "
+      "strands another one");
+  TEST_ASSERT_TRUE_MESSAGE(startFetchTask(), "and the retry must then succeed");
 }
 
 static void test_mutex_allocation_failure_is_reported() {

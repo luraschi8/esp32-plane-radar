@@ -115,6 +115,17 @@ void drawBoldRunwayLabel(lgfx::LGFXBase& gfx, const char* ident, int mx, int my)
   constexpr int kPadY = 1;
 
   gfx.setTextDatum(textdatum_t::bottom_center);
+  // The anchor is pushed outward from the centre and, for an airport beyond the
+  // ring, clipped onto the ring itself -- which at the top of the panel leaves
+  // only a few pixels above it. The label is drawn upward from the anchor, so
+  // without this it runs off the edge and is cut in half. Clamp here, where the
+  // metrics are already in hand; one branch per label, no extra work.
+  const int half_w = tw / 2 + kPadX;
+  if (mx - half_w < 0) mx = half_w;
+  if (mx + half_w > radar::kSize) mx = radar::kSize - half_w;
+  if (my - th - kPadY < 0) my = th + kPadY;
+  if (my > radar::kSize) my = radar::kSize;
+
   const int left = mx - tw / 2 - kPadX;
   const int top = my - th - kPadY;
   gfx.fillRect(left, top, tw + kPadX * 2, th + kPadY, radar::kColorBackground);

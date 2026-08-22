@@ -29,7 +29,9 @@ class WiFiManager {
   // onConfigPortalApStarted() -- and therefore the AP-side TX-power cap.
   void setAPCallback(void (*cb)(WiFiManager*)) { ap_cb_ = cb; }
   void fireApCallback() { if (ap_cb_) ap_cb_(this); }
-  void setSaveParamsCallback(void (*)()) {}
+  void setSaveParamsCallback(void (*cb)()) { save_cb_ = cb; }
+  /** Simulate the browser posting the settings form. */
+  void fireSaveParamsCallback() { if (save_cb_) save_cb_(); }
   void addParameter(WiFiManagerParameter*) {}
   void setConfigPortalBlocking(bool) {}
   void resetSettings() { ++g_wm.reset; }
@@ -48,4 +50,5 @@ class WiFiManager {
   String getWiFiPass() { return String("pw"); }
   bool web_ = false;
   void (*ap_cb_)(WiFiManager*) = nullptr;
+  void (*save_cb_)() = nullptr;
 };

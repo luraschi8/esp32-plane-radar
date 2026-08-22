@@ -93,8 +93,11 @@ bool saveFromStrings(const char* lat_str, const char* lon_str) {
     return false;
   }
   if (!persist(lat, lon)) {
+    // The coordinates WERE accepted and are live; only the NVS write failed.
+    // Reporting that as a rejection made the caller print "keeping previous
+    // location" directly under this line, which is the opposite of the truth.
     Serial.printf("Radar location applied but NOT saved: %.6f, %.6f\n", lat, lon);
-    return false;
+    return true;
   }
   Serial.printf("Radar location saved: %.6f, %.6f\n", lat, lon);
   return true;

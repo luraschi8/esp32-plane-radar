@@ -13,6 +13,8 @@ MockTlsStats g_tls;
 MockHttp g_http;
 int g_mutex_alloc_fail = 0;
 int g_mutex_take_fails = 0;
+int g_mutex_outstanding = 0;
+int g_mutex_live = 0;
 int g_task_create_fail = 0;
 #include <LovyanGFX.hpp>
 GfxRecorder g_gfx;

@@ -23,7 +23,13 @@ struct Aircraft {
    * run from when the fix was taken, not from when we fetched it.
    */
   float pos_age_s;
-  /** API-computed distance from the radar centre (NM); < 0 if absent. */
+  /**
+   * API-computed distance from the radar centre (NM); < 0 if absent. Not read
+   * by the renderer, which projects from lat/lon — it is kept deliberately as
+   * the independent check that caught the missing cos(latitude) term in the
+   * projection, and test_geo asserts our own distances against it. Cost is
+   * 4 B per slot (512 B across both buffers) and one key in the JSON filter.
+   */
   float dst_nm;
   char callsign[9];
   char type[5];

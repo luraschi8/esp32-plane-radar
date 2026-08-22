@@ -14,6 +14,7 @@ namespace ui {
  *  - exactly one frame is requested after traffic disappears (to clear it)
  *  - once that clearing frame is on the panel, no more are requested
  *  - a frame that was NOT blitted never updates the record, and is retried
+ *  - a settings change requests a frame even when the sky is empty
  */
 class RenderPolicy {
  public:
@@ -35,6 +36,15 @@ class RenderPolicy {
     traffic_drawn_ = traffic;
     needs_redraw_ = false;
   }
+
+  /**
+   * Something off-screen changed what a frame should look like -- a range
+   * preset, the runway toggle, km/mi, a new location. With an empty sky
+   * shouldRender() is otherwise false forever after the clearing frame, so
+   * without this the panel keeps showing the old settings until traffic
+   * appears.
+   */
+  void requestRedraw() { needs_redraw_ = true; }
 
   /** Connection lost: nothing on the panel can be trusted as current. */
   void reset() {

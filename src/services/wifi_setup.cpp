@@ -99,6 +99,8 @@ void refreshPortalParamDefaults() {
   s_param_runways.setValue("T", 2);
 }
 
+bool s_settings_changed = false;
+
 void onPortalParamsSaved() {
   if (!services::location::saveFromStrings(s_param_lat.getValue(),
                                            s_param_lon.getValue())) {
@@ -111,6 +113,9 @@ void onPortalParamsSaved() {
   // checked attribute) the box renders wrong on the next page load and can
   // never be switched back on until the portal restarts.
   refreshPortalParamDefaults();
+  // The panel is driven by a render policy that idles when the sky is empty;
+  // tell it the frame is now out of date whatever the traffic is doing.
+  s_settings_changed = true;
 }
 
 void attachPortalParams(WiFiManager& wm) {
@@ -423,6 +428,12 @@ bool wifiReconnect() {
   initBootButton();
   Serial.println("WiFi reconnecting...");
   return connectSavedNetwork(true);
+}
+
+bool wifiConsumeSettingsChanged() {
+  const bool changed = s_settings_changed;
+  s_settings_changed = false;
+  return changed;
 }
 
 void wifiLoop() {

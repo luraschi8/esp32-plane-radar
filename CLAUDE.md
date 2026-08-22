@@ -23,7 +23,7 @@ pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.b
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-**Run `pio test -e native` before and after any change** — 165 host-side tests across eight suites, ~5 s:
+**Run `pio test -e native` before and after any change** — 179 host-side tests across eight suites, ~4 s:
 `test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),
 `test_render_policy` (the render state machine), `test_adsb` (the whole fetch/parse pipeline against real
 captured payloads), `test_display` (rendering and runway overlay via a recording-canvas LovyanGFX mock), `test_wifi` (BOOT button, credential reset, force-portal flag, LAN portal lifecycle, status screens),
@@ -40,7 +40,7 @@ untestable on the host: real lock contention, task preemption, heap fragmentatio
 loading, WiFiManager's real HTML, contact bounce, and 80 MHz SPI integrity. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.7% (1247600 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.7% (1247718 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration
@@ -58,7 +58,8 @@ Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>
   back to bitmap `GFXfont`s at runtime.
 - **`services/`** — `wifi_setup` (WiFiManager, BOOT button, NVS force-portal flag), `radar_location`
   (lat/lon in NVS), `adsb_client` (HTTPS fetch + ArduinoJson parse into a fixed `Aircraft[64]`).
-- **`ui/`** — `radar_geo` (the shared projection/clipping math), `radar_display` (grid + aircraft compositing),
+- **`ui/`** — `radar_geo` (the shared projection/clipping math), `render_policy` (header-only state machine
+  deciding when `loop()` composites a frame), `radar_display` (grid + aircraft compositing),
   `runway_overlay`, `status_screens` (portal / connecting / reset screens), `radar_range` (range presets +
   units + runway toggle, all in NVS).
 - **`data/`** — `large_airports_data.cpp` is **generated**; never hand-edit it or `include/data/large_airports.h`.
@@ -66,7 +67,9 @@ Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>
 
 `main.cpp` owns the state machine: boot → optional setup screen → `wifiSetupConnect()` → radar; the loop polls
 the BOOT button, services `wifiLoop()` (keeps the LAN portal alive), reconnects with a grace period on Wi-Fi
-loss, and redraws every `kRenderIntervalMs`.
+loss, and redraws at most every `kRenderIntervalMs`. That is a **ceiling, not a steady rate**: `RenderPolicy`
+idles once the sky is empty and the clearing frame has landed, so a still radar is not a stalled one. A portal
+settings save sets `wifiConsumeSettingsChanged()`, which asks the policy for the one frame that shows it.
 
 **ADS-B runs on its own FreeRTOS task** (`startFetchTask`), because a fetch blocks — almost all of it waiting
 on the socket — and that froze the render loop for half of every cycle. The `WiFiClientSecure`/`HTTPClient`
@@ -74,10 +77,13 @@ pair is **file-scope and reused**: mbedTLS needs two ~16.4 KB contiguous blocks,
 a fragmented heap caused intermittent `SSL - Memory allocation failed` storms. Reusing the connection also
 dropped the cycle from ~4.6 s to ~3.5 s by skipping the handshake. Any error path calls `s_client.stop()` so
 the next attempt renegotiates. The task parses into a back
-buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` and *skips the
-traffic layer* rather than stalling if it can't get it. Never call `wifiLoop()` / WiFiManager `process()` from
+buffer and publishes it under a mutex; `drawAircraft()` takes that lock via `aircraftLock()` rather than stalling
+if it can't get it — in the sprite path that drops the whole frame and leaves the previous one on the panel;
+in the direct-draw fallback the grid lands without traffic. Either way the frame is reported as **not**
+painted, so `RenderPolicy` retries on the next tick instead of latching it. Never call `wifiLoop()` / WiFiManager `process()` from
 the fetch task — it is not thread-safe and `loop()` already owns it. `fetchTaskStackFree()` reports the task's
-stack high-water mark and is logged every 32nd fetch (4,820 B of 8,192 used when last measured); watch it
+stack headroom — ESP-IDF's high-water mark, i.e. bytes still **free**, logged every 32nd fetch (3,620 B free
+of 8,192, so ~4,572 B used, measured on device at the current TLS call depth); watch it
 after anything that deepens the fetch call path, since mbedTLS depth varies with the server's cert chain.
 
 ### Rendering model

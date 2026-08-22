@@ -3,6 +3,9 @@
 // what a credential reset actually clears.
 #include <Arduino.h>
 #include <unity.h>
+#include <algorithm>
+#include <climits>
+#include <map>
 #include <cstdint>
 
 #include "../mocks/mock_globals.h"
@@ -289,14 +292,23 @@ static void test_the_connecting_spinner_erases_what_it_drew() {
   statusScreenConnectingBegin("TestNet");
   g_gfx.reset();
   statusScreenConnectingTick();
-  int erased = 0, drawn = 0;
-  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) ++drawn;
-  for (const auto& o : g_gfx.of(DrawOp::Circle)) ++erased;      // fillCircle records as SmoothCircle
-  // The erase pass uses fillCircle (recorded as SmoothCircle) too, so count all
-  // circle ops and require at least one erase for every dot drawn.
-  TEST_ASSERT_TRUE_MESSAGE(drawn >= 20,
-      "a tick must erase the previous dots and draw the new ones");
-  (void)erased;
+  // Both passes are fillCircle, so they are told apart by colour: one paints
+  // the background over the previous dots, the other paints the new ones.
+  // Counting the total only proved "something was drawn" -- it could not see an
+  // erase pass that had stopped erasing.
+  // The trail is a brightness gradient, so the drawn dots are many colours and
+  // the erase pass is the single most-repeated one.
+  std::map<uint16_t, int> by_colour;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) by_colour[o.color]++;
+  int erased = 0, total = 0;
+  for (const auto& kv : by_colour) { erased = std::max(erased, kv.second); total += kv.second; }
+  const int drawn = total - erased;
+  char m[192];
+  snprintf(m, sizeof(m), "%d dots painted in %d colours, %d erased in one -- the erase "
+           "pass must cover every dot of the trail", drawn, (int)by_colour.size() - 1,
+           erased);
+  TEST_ASSERT_TRUE_MESSAGE(by_colour.size() >= 2, m);
+  TEST_ASSERT_TRUE_MESSAGE(drawn > 0 && erased >= drawn, m);
 }
 
 static void test_a_long_ssid_is_truncated_not_overrun() {

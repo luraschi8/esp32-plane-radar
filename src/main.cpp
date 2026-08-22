@@ -128,6 +128,10 @@ void loop() {
       g_last_task_retry_ms = millis();
       g_fetch_task_ok = services::adsb::startFetchTask();
     }
+    // Portal saves happen off-screen and out of band with the render policy.
+    if (wifiConsumeSettingsChanged()) {
+      g_render.requestRedraw();
+    }
     if (!g_radar_visible) {
       // Rate-limited like any other frame: showRadarIfConnected() can decline
       // to latch (aircraft list locked), and retrying a ~44 ms composite every

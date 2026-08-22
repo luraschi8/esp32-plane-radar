@@ -175,14 +175,33 @@ static void test_reset_preserves_the_range_preset() {
 }
 
 // A failed NVS open makes putX() a silent no-op on real hardware, so an
-// unchecked begin() reports "saved" while the coordinates vanish on reboot.
-static void test_location_save_reports_nvs_failure() {
+// unchecked begin() would lose the coordinates on reboot with no sign of it.
+// The return value means "accepted", not "persisted": returning false here made
+// the portal print "keeping previous location" directly under radar_location's
+// own "applied but NOT saved", which is the opposite of the truth.
+static void test_a_refused_nvs_write_still_applies_the_location() {
   g_nvs.open_fail_count = 99;
-  TEST_ASSERT_FALSE_MESSAGE(services::location::saveFromStrings("41.0", "-4.0"),
-      "a save that did not reach NVS must not report success");
+  TEST_ASSERT_TRUE_MESSAGE(services::location::saveFromStrings("41.0", "-4.0"),
+      "the coordinates were valid and are live; only the write failed");
   TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(41.0, services::location::lat(),
-      "the runtime value should still apply for this session");
+      "the runtime value must apply for this session");
   TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("radar/lat"), "nothing should be stored");
+}
+
+// Invalid input is the case that DOES report failure, so the two are not
+// conflated back together.
+static void test_invalid_coordinates_are_rejected_and_change_nothing() {
+  services::location::saveFromStrings("41.0", "-4.0");
+  const double before_lat = services::location::lat();
+  for (const char* bad_lat : {"91.0", "abc", "", "-91"}) {
+    char m[112];
+    snprintf(m, sizeof(m), "lat '%s' must be rejected", bad_lat);
+    TEST_ASSERT_FALSE_MESSAGE(services::location::saveFromStrings(bad_lat, "-4.0"), m);
+  }
+  TEST_ASSERT_FALSE_MESSAGE(services::location::saveFromStrings("41.0", "181.0"),
+      "an out-of-range longitude must be rejected");
+  TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(before_lat, services::location::lat(),
+      "a rejected save must leave the previous location untouched");
 }
 
 static void test_nvs_open_failure_leaves_the_button_working() {
@@ -258,7 +277,8 @@ int main(int, char**) {
   RUN_TEST(test_units_and_runways_are_actually_persisted);
   RUN_TEST(test_reset_restores_both_toggles_and_clears_storage);
   RUN_TEST(test_reset_preserves_the_range_preset);
-  RUN_TEST(test_location_save_reports_nvs_failure);
+  RUN_TEST(test_a_refused_nvs_write_still_applies_the_location);
+  RUN_TEST(test_invalid_coordinates_are_rejected_and_change_nothing);
   RUN_TEST(test_nvs_open_failure_leaves_the_button_working);
   RUN_TEST(test_location_defaults_before_anything_is_saved);
   RUN_TEST(test_location_round_trips_through_nvs);

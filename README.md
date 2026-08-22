@@ -11,7 +11,7 @@ Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (
 1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
 2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
 
-After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its own task with a ~3.5 s cycle (the HTTPS connection is kept alive between requests), while the display re-renders at ~10 fps in between.
+After Wi‑Fi is saved, the device reconnects automatically; ADS-B runs on its own task with a ~3.5 s cycle (the HTTPS connection is kept alive between requests), while the display re-renders at up to ~10 fps in between (it idles when the sky is empty).
 
 ## Controls (BOOT, GPIO 9, active LOW)
 
@@ -71,7 +71,7 @@ Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
 ### Runways
 
-- Major airports from OurAirports (`large_airport`); open runway strips in range (helipads excluded), capped at 32 strips and 12 airport labels — roughly 2.5× the worst case anywhere in the dataset
+- Major airports from OurAirports (`large_airport`); open runway strips in range (helipads excluded), capped at 32 strips and 12 airport labels — 2.7× and 4× the worst case anywhere in the dataset (12 strips / 3 airports, measured over the shipped data at the widest preset)
 - Teal runway lines with one ICAO label per airport (e.g. `KJFK`); toggle in the Wi‑Fi setup portal
 - Update the embedded list: `python3 scripts/build_large_airports.py`
 
@@ -121,6 +121,7 @@ include/
     radar_theme.h
     radar_range.h
     radar_geo.h
+    render_policy.h
     radar_display.h
     runway_overlay.h
     status_screens.h
@@ -172,7 +173,6 @@ Full build / verify / flash procedure, including troubleshooting: **[OPS.md](OPS
 Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32-C3, 4 MB, flash at **0x0**):
 
 ```bash
-chmod +x scripts/merge-firmware.sh   # once
 ./scripts/merge-firmware.sh
 ```
 
@@ -195,7 +195,7 @@ Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with C
 
 | Workflow | When | Output |
 |----------|------|--------|
-| [Build](.github/workflows/build.yml) | Push / PR to `main` | Artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
+| [Build](.github/workflows/build.yml) | Push to `main`/`master`, any PR, manual dispatch | Runs the host test suite, then artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
 | [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
 
 To ship a version users can download:

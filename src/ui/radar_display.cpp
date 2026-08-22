@@ -771,12 +771,15 @@ bool radarDisplayDraw() {
   }
 
   // Fallback when the sprite can't be allocated: draw straight to the panel.
-  // There is no blit to skip here, so the panel is always updated.
+  // The grid always lands, but if drawAircraft() could not take the traffic
+  // lock the panel now shows a grid with the targets erased. Reporting that as
+  // painted would latch it until the next publish; report it as not-painted so
+  // the caller retries on the next tick.
   const DrawScope scope(tft);
   drawStaticGrid(tft);
-  drawAircraft();
+  const bool traffic_drawn = drawAircraft();
   tft.setTextDatum(textdatum_t::top_left);
-  return true;
+  return traffic_drawn;
 }
 
 bool radarDisplayRefreshAircraft() {

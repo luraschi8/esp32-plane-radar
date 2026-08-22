@@ -9,6 +9,12 @@ bool wifiSetupConnect();
 bool wifiReconnect();
 /** Keeps the LAN config portal alive; call every loop() iteration. */
 void wifiLoop();
+/**
+ * True once after the portal saves settings (location, units, runway toggle).
+ * The portal runs off-screen, so with an empty sky nothing would otherwise ask
+ * for the frame that shows the change. Consuming clears the flag.
+ */
+bool wifiConsumeSettingsChanged();
 bool wifiBootButtonPressed();
 /** GPIO + interrupt setup; call once early in setup(). */
 void bootButtonInit();

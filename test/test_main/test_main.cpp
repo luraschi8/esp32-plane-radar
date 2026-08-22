@@ -117,6 +117,48 @@ static void test_a_brief_drop_does_not_blank_the_radar_permanently() {
       "a momentary drop must not require a full reconnect cycle to recover");
 }
 
+// REGRESSION. The render policy idles when the sky is empty, and the config
+// portal runs off-screen: nothing in the save path asked for a frame, so
+// toggling the runway overlay, switching km/mi or moving the location produced
+// no visible change until traffic happened to appear. Before the policy existed
+// every successful fetch redrew the whole grid, so these showed up within ~5 s.
+static void test_a_portal_settings_change_repaints_an_empty_radar() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  g_http.reset();
+  g_http.body = "{\"ac\":[]}";                   // empty sky: the policy goes idle
+  g_http.code = HTTP_CODE_OK;
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  for (int i = 0; i < 40; ++i) loop();
+  g_gfx.reset();
+  for (int i = 0; i < 40; ++i) loop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "precondition: with no traffic the policy must be idle, or this proves nothing");
+
+  s_wm.fireSaveParamsCallback();                // the browser posts the form
+  for (int i = 0; i < 40; ++i) loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0,
+      "a settings change must repaint even with an empty sky, or the runway "
+      "toggle and km/mi appear to do nothing until an aircraft flies past");
+}
+
+// ...and it is a one-shot: the flag must not pin the renderer on forever.
+static void test_the_settings_repaint_is_a_one_shot() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  g_http.reset(); g_http.body = "{\"ac\":[]}"; g_http.code = HTTP_CODE_OK;
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  for (int i = 0; i < 40; ++i) loop();
+  s_wm.fireSaveParamsCallback();
+  for (int i = 0; i < 40; ++i) loop();
+  g_gfx.reset();
+  for (int i = 0; i < 60; ++i) loop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "one frame, not a permanent 10 fps redraw of an empty grid");
+}
+
 // A frame costs ~44 ms; loop() must rate-limit rendering or it starves the
 // portal and the button.
 static void test_loop_renders_no_faster_than_the_render_interval() {
@@ -188,6 +230,8 @@ int main(int, char**) {
   RUN_TEST(test_loop_retries_a_failed_fetch_task);
   RUN_TEST(test_the_radar_comes_back_after_a_wifi_drop);
   RUN_TEST(test_a_brief_drop_does_not_blank_the_radar_permanently);
+  RUN_TEST(test_a_portal_settings_change_repaints_an_empty_radar);
+  RUN_TEST(test_the_settings_repaint_is_a_one_shot);
   RUN_TEST(test_loop_renders_no_faster_than_the_render_interval);
   RUN_TEST(test_loop_does_not_render_while_disconnected);
   RUN_TEST(test_loop_waits_the_grace_period_before_reconnecting);
