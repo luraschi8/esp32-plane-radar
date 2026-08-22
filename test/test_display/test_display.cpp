@@ -1078,20 +1078,32 @@ static void test_the_frame_is_cleared_before_anything_is_drawn() {
 // Without a sprite the grid still reaches the panel, but a failed traffic lock
 // means the targets were erased from it. Reporting that as painted latches a
 // grid with no aircraft on it until the next publish.
+// MUST run before any test allocates the frame sprite: s_frame_ready is a
+// file-static, so once a sprite exists sprite_alloc_fails does nothing and this
+// silently re-tests renderFrame() instead -- which is how it first passed.
 static void test_the_direct_draw_fallback_reports_a_failed_traffic_lock() {
+  g_gfx.sprite_alloc_fails = true;            // force the no-sprite path
   Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
   publishTargets(t, 1);
-  g_gfx.sprite_alloc_fails = true;            // force the no-sprite path
+  // aircraftLock() returns true unconditionally when no mutex exists, so
+  // g_mutex_take_fails would never be consumed without a real one.
+  services::adsb::startFetchTask();
+  g_gfx.reset();
   TEST_ASSERT_TRUE_MESSAGE(radarDisplayDraw(),
       "precondition: the fallback path must normally report a painted frame");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "precondition: this must be the direct-draw path, with nothing to blit");
   g_mutex_take_fails = 1;
   TEST_ASSERT_FALSE_MESSAGE(radarDisplayDraw(),
-      "a frame drawn without its traffic must not be reported as painted");
+      "a frame drawn without its traffic must not be reported as painted, or a "
+      "bare grid is latched until the next publish");
   g_gfx.sprite_alloc_fails = false;
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
+  // Before anything allocates the frame sprite -- see the test's own comment.
+  RUN_TEST(test_the_direct_draw_fallback_reports_a_failed_traffic_lock);
   // These two must run first: the frame sprite is created once and cached in a
   // file-static, so once any test succeeds in allocating it, a scripted
   // allocation failure can never be observed again.
@@ -1130,7 +1142,6 @@ int main(int, char**) {
   RUN_TEST(test_segment_disc_intersection_handles_the_chord_case);
   RUN_TEST(test_speed_vector_length_boundaries);
   RUN_TEST(test_every_draw_path_gives_the_aircraft_lock_back);
-  RUN_TEST(test_the_direct_draw_fallback_reports_a_failed_traffic_lock);
   RUN_TEST(test_the_centre_dot_is_drawn);
   RUN_TEST(test_the_bitmap_font_picker_returns_the_closest_candidate);
   RUN_TEST(test_the_bitmap_scale_label_is_not_larger_than_the_cardinals);

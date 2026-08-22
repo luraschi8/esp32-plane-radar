@@ -441,6 +441,54 @@ static void test_a_non_retryable_error_does_not_consume_the_retry_budget() {
       "a server error is not a connection failure -- retrying it is pure load");
 }
 
+// The retryable set is deliberately narrow: only a refused connection or a
+// dropped link are worth a second attempt. A read timeout, a TLS failure or a
+// DNS failure must return at once -- adsb.fi throttled this device's address
+// after ~118 handshakes in 10 s, so three GETs per failure is not free.
+// (A 500 exits at the code>0 guard above and never reaches this one.)
+static void test_a_transport_error_outside_the_retryable_set_returns_at_once() {
+  for (int err : {(int)HTTPC_ERROR_READ_TIMEOUT, (int)HTTPC_ERROR_CONNECTION_LOST,
+                  (int)HTTPC_ERROR_SEND_HEADER_FAILED, -60 /* TLS or DNS */}) {
+    g_http.reset();
+    g_http.code = err;
+    TEST_ASSERT_FALSE(fetchUpdate(40.4, -3.6, 30.0f));
+    char m[144];
+    snprintf(m, sizeof(m), "transport error %d produced %d GETs; only a refused "
+             "connection or a dropped link are retryable", err, g_http.get_calls);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_http.get_calls, m);
+  }
+}
+
+// ...and the two that ARE retryable must use the whole budget.
+static void test_a_refused_connection_uses_the_retry_budget() {
+  for (int err : {(int)HTTPC_ERROR_CONNECTION_REFUSED, (int)HTTPC_ERROR_NOT_CONNECTED}) {
+    g_http.reset();
+    g_http.code = err;
+    TEST_ASSERT_FALSE(fetchUpdate(40.4, -3.6, 30.0f));
+    char m[144];
+    snprintf(m, sizeof(m), "retryable error %d produced %d GETs, expected %u",
+             err, g_http.get_calls, (unsigned)kMaxGetAttempts);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)kMaxGetAttempts, g_http.get_calls, m);
+  }
+}
+
+// A 200 whose stream is gone (connection torn down between the header and the
+// body). Dereferenced, this is a null deref inside deserializeJson -- a boot
+// loop on the device, not a dropped frame.
+static void test_a_null_response_stream_is_handled() {
+  fetch(kAirbornePayload());
+  const size_t good = aircraftCount();
+  g_http.reset();
+  g_http.body = kAirbornePayload();
+  g_http.code = HTTP_CODE_OK;
+  g_http.null_stream = true;
+  TEST_ASSERT_FALSE_MESSAGE(fetchUpdate(40.4, -3.6, 30.0f),
+      "a 200 with no stream must be reported as a failure");
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)good, (int)aircraftCount(),
+      "and must leave the last good list intact");
+  g_http.null_stream = false;
+}
+
 // The shape guard has two arms; only the first was exercised.
 static void test_an_ac_field_that_is_not_an_array_is_rejected() {
   fetch(kAirbornePayload());
@@ -500,6 +548,9 @@ int main(int, char**) {
   RUN_TEST(test_a_tick_while_connected_fetches);
   RUN_TEST(test_unwanted_fields_are_not_retained);
   RUN_TEST(test_a_non_retryable_error_does_not_consume_the_retry_budget);
+  RUN_TEST(test_a_transport_error_outside_the_retryable_set_returns_at_once);
+  RUN_TEST(test_a_refused_connection_uses_the_retry_budget);
+  RUN_TEST(test_a_null_response_stream_is_handled);
   RUN_TEST(test_an_ac_field_that_is_not_an_array_is_rejected);
   return UNITY_END();
 }

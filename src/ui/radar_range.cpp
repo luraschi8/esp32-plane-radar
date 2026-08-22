@@ -25,6 +25,9 @@ bool s_show_runways = true;
 
 void saveRangeIndex() {
   if (!s_prefs.begin(kPrefsNamespace, false)) {
+    // radar_location reports exactly this case rather than failing silently; a
+    // setting that looks saved and is gone after a reboot is the same bug here.
+    Serial.println("Range preset applied but NOT saved");
     return;
   }
   s_prefs.putUChar(kPrefsRangeKey, s_range_index);
@@ -33,6 +36,7 @@ void saveRangeIndex() {
 
 void saveUseMiles() {
   if (!s_prefs.begin(kPrefsNamespace, false)) {
+    Serial.println("Unit setting applied but NOT saved");
     return;
   }
   s_prefs.putBool(kPrefsMilesKey, s_use_miles);
@@ -41,6 +45,7 @@ void saveUseMiles() {
 
 void saveShowRunways() {
   if (!s_prefs.begin(kPrefsNamespace, false)) {
+    Serial.println("Runway toggle applied but NOT saved");
     return;
   }
   s_prefs.putBool(kPrefsRunwaysKey, s_show_runways);

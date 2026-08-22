@@ -25,12 +25,23 @@ struct MockWiFi {
   void setSleep(int) {}
   void setAutoReconnect(bool) {}
   void persistent(bool) {}
-  void begin() { ++begin_calls; }
-  void begin(const char*, const char*) { ++begin_calls; }
+  /**
+   * When set, a begin() brings the link up. Without this the mock link can only
+   * be moved by the test writing status_ directly, which meant no test ever
+   * caused a reconnect -- wifiReconnect() could be replaced with `return false`
+   * and the whole suite stayed green.
+   */
+  bool link_up_on_begin = false;
+  void begin() { ++begin_calls; if (link_up_on_begin) status_ = WL_CONNECTED; }
+  void begin(const char*, const char*) {
+    ++begin_calls;
+    if (link_up_on_begin) status_ = WL_CONNECTED;
+  }
   void disconnect(bool = false, bool = false) { ++disconnect_calls; }
   IPAddress localIP() const { return ip; }
   String SSID() const { return ssid; }
   void reset() { status_ = WL_CONNECTED; ip = IPAddress(192,168,1,96); mode_calls = 0;
-                 begin_calls = 0; disconnect_calls = 0; txpower_calls = 0; }
+                 begin_calls = 0; disconnect_calls = 0; txpower_calls = 0;
+                 link_up_on_begin = false; }
 };
 extern MockWiFi WiFi;

@@ -159,6 +159,80 @@ static void test_the_settings_repaint_is_a_one_shot() {
       "one frame, not a permanent 10 fps redraw of an empty grid");
 }
 
+// The reconnect itself, not just the repaint afterwards. Nothing drove the mock
+// link back up on its own, so wifiReconnect() could be replaced with
+// `return false` and all 179 tests stayed green -- while on the device any drop
+// longer than kWifiDownGraceMs would leave the radar dead until a power cycle.
+static void test_loop_actually_reconnects_after_a_long_drop() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  loop();
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;
+  WiFi.link_up_on_begin = true;        // a begin() now brings the link back
+  g_gfx.reset();
+
+  const int before = WiFi.begin_calls;
+  for (unsigned i = 0;
+       i < (config::kWifiDownGraceMs + config::kWifiReconnectIntervalMs) / 10 + 60; ++i) {
+    loop();
+  }
+  char m[176];
+  snprintf(m, sizeof(m), "loop() made %d WiFi.begin() calls after a %lu ms drop",
+           WiFi.begin_calls - before, (unsigned long)config::kWifiDownGraceMs);
+  TEST_ASSERT_TRUE_MESSAGE(WiFi.begin_calls > before, m);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(WL_CONNECTED, WiFi.status(),
+      "the link must actually come back up");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0,
+      "and the radar must repaint once it does");
+}
+
+// Each reconnect is a whole cycle of kWifiConnectAttempts, and once the link is
+// back loop() must stop calling begin() -- a regression that kept retrying
+// would thrash the radio underneath a working connection.
+static void test_reconnect_stops_once_the_link_is_back() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  loop();
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;
+  WiFi.link_up_on_begin = true;
+  for (unsigned i = 0;
+       i < (config::kWifiDownGraceMs + config::kWifiReconnectIntervalMs) / 10 + 60; ++i)
+    loop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(WL_CONNECTED, WiFi.status(),
+      "precondition: the link must have come back");
+
+  const int after_recovery = WiFi.begin_calls;
+  for (int i = 0; i < 200; ++i) loop();
+  char m[176];
+  snprintf(m, sizeof(m), "%d further begin() calls after the link was already up",
+           WiFi.begin_calls - after_recovery);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(after_recovery, WiFi.begin_calls, m);
+}
+
+// Attempts arrive as whole cycles; a partial cycle means the retry loop was cut.
+static void test_a_reconnect_runs_a_full_attempt_cycle() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  loop();
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;          // stays down: the cycle runs in full
+  const int before = WiFi.begin_calls;
+  for (unsigned i = 0;
+       i < (config::kWifiDownGraceMs + config::kWifiReconnectIntervalMs) / 10 + 60; ++i)
+    loop();
+  const int attempts = WiFi.begin_calls - before;
+  char m[192];
+  snprintf(m, sizeof(m), "%d begin() calls; each reconnect must be a whole cycle of "
+           "%u attempts", attempts, (unsigned)config::kWifiConnectAttempts);
+  TEST_ASSERT_TRUE_MESSAGE(attempts > 0, m);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, attempts % (int)config::kWifiConnectAttempts, m);
+}
+
 // A frame costs ~44 ms; loop() must rate-limit rendering or it starves the
 // portal and the button.
 static void test_loop_renders_no_faster_than_the_render_interval() {
@@ -235,6 +309,9 @@ int main(int, char**) {
   RUN_TEST(test_loop_renders_no_faster_than_the_render_interval);
   RUN_TEST(test_loop_does_not_render_while_disconnected);
   RUN_TEST(test_loop_waits_the_grace_period_before_reconnecting);
+  RUN_TEST(test_loop_actually_reconnects_after_a_long_drop);
+  RUN_TEST(test_reconnect_stops_once_the_link_is_back);
+  RUN_TEST(test_a_reconnect_runs_a_full_attempt_cycle);
   RUN_TEST(test_a_boot_tap_cycles_the_range);
   return UNITY_END();
 }

@@ -180,12 +180,19 @@ static void test_reset_preserves_the_range_preset() {
 // the portal print "keeping previous location" directly under radar_location's
 // own "applied but NOT saved", which is the opposite of the truth.
 static void test_a_refused_nvs_write_still_applies_the_location() {
+  Serial.capture = true; Serial.log.clear();
   g_nvs.open_fail_count = 99;
   TEST_ASSERT_TRUE_MESSAGE(services::location::saveFromStrings("41.0", "-4.0"),
       "the coordinates were valid and are live; only the write failed");
   TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(41.0, services::location::lat(),
       "the runtime value must apply for this session");
   TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("radar/lat"), "nothing should be stored");
+  char lm[256];
+  snprintf(lm, sizeof(lm), "serial log was: '%s'", Serial.log.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.find("NOT saved") != std::string::npos, lm);
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.find("keeping previous") == std::string::npos,
+      "must not also claim the previous location was kept -- it was not");
+  Serial.capture = false; Serial.log.clear();
 }
 
 // Invalid input is the case that DOES report failure, so the two are not
@@ -202,6 +209,36 @@ static void test_invalid_coordinates_are_rejected_and_change_nothing() {
       "an out-of-range longitude must be rejected");
   TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(before_lat, services::location::lat(),
       "a rejected save must leave the previous location untouched");
+}
+
+// radar_location reports a refused NVS write rather than failing silently;
+// radar_range used to swallow it, so a portal save looked successful and the
+// setting was gone after a reboot. Same bug class, so same behaviour.
+static void test_a_refused_nvs_write_still_applies_the_range_settings() {
+  rangeInit();
+  const float before = rangeCurrent().ring3_km;
+  const bool miles_before = useMiles();
+  const std::string stored_idx = g_nvs.store["planeradar/rangeIdx"];
+  Serial.capture = true; Serial.log.clear();
+  g_nvs.open_fail_count = 99;
+  rangeNext();
+  saveMilesFromPortal(miles_before ? "" : "T");
+  TEST_ASSERT_TRUE_MESSAGE(rangeCurrent().ring3_km != before,
+      "the range must still change for this session");
+  TEST_ASSERT_TRUE_MESSAGE(useMiles() != miles_before,
+      "and so must the unit setting");
+  // setUp() seeds rangeIdx, so the key exists; what matters is that the failed
+  // write did not change it.
+  TEST_ASSERT_TRUE_MESSAGE(stored_idx == g_nvs.store["planeradar/rangeIdx"],
+      "the stored preset must be untouched when the write was refused");
+  TEST_ASSERT_FALSE_MESSAGE(g_nvs.store.count("planeradar/useMiles"),
+      "and the unit setting must not have been written either");
+  // The serial log is the only channel that can tell a user their setting will
+  // not survive a reboot; without it the failure is completely silent.
+  char m[256];
+  snprintf(m, sizeof(m), "serial log was: '%s'", Serial.log.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.find("NOT saved") != std::string::npos, m);
+  Serial.capture = false; Serial.log.clear();
 }
 
 static void test_nvs_open_failure_leaves_the_button_working() {
@@ -279,6 +316,7 @@ int main(int, char**) {
   RUN_TEST(test_reset_preserves_the_range_preset);
   RUN_TEST(test_a_refused_nvs_write_still_applies_the_location);
   RUN_TEST(test_invalid_coordinates_are_rejected_and_change_nothing);
+  RUN_TEST(test_a_refused_nvs_write_still_applies_the_range_settings);
   RUN_TEST(test_nvs_open_failure_leaves_the_button_working);
   RUN_TEST(test_location_defaults_before_anything_is_saved);
   RUN_TEST(test_location_round_trips_through_nvs);

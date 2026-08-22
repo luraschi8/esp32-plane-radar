@@ -6,6 +6,9 @@ enum {
   HTTP_CODE_OK = 200,
   HTTPC_ERROR_CONNECTION_REFUSED = -1,
   HTTPC_ERROR_NOT_CONNECTED = -4,
+  HTTPC_ERROR_SEND_HEADER_FAILED = -2,
+  HTTPC_ERROR_SEND_PAYLOAD_FAILED = -3,
+  HTTPC_ERROR_CONNECTION_LOST = -5,
   HTTPC_ERROR_READ_TIMEOUT = -11,
 };
 
@@ -16,10 +19,13 @@ struct MockHttp {
   int fail_first_n_gets = 0;      // return CONNECTION_REFUSED this many times
   int content_length_override = 0;  // 0 = use body.size()
   int get_calls = 0;
+  /** Return a null stream from a 200, as a torn-down connection can. */
+  bool null_stream = false;
   int begin_calls = 0;
   int end_calls = 0;
   std::string last_url;
-  void reset() { *this = MockHttp(); }
+  void reset() {
+    null_stream = false; *this = MockHttp(); }
 };
 extern MockHttp g_http;
 
@@ -45,7 +51,10 @@ class HTTPClient {
   int getSize() const {
     return g_http.content_length_override ? g_http.content_length_override : (int)g_http.body.size();
   }
-  WiFiClient* getStreamPtr() { return static_cast<WiFiClient*>(client_); }
+  WiFiClient* getStreamPtr() {
+    if (g_http.null_stream) return nullptr;
+    return static_cast<WiFiClient*>(client_);
+  }
   void end() { ++g_http.end_calls; }
  private:
   WiFiClient* client_ = nullptr;

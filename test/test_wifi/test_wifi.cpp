@@ -430,6 +430,82 @@ static void test_connect_retries_are_bounded() {
   TEST_ASSERT_EQUAL_INT_MESSAGE((int)config::kWifiConnectAttempts, WiFi.begin_calls, m);
 }
 
+// ------------------------------------------------ the boot decision tree ---
+// wifiSetupConnect() was never called by any test. On a cold boot WiFi.status()
+// is not WL_CONNECTED, so the "try the saved network" branch IS the normal path:
+// stubbing it out means every boot opens the setup portal instead of connecting,
+// and nothing noticed. A forced-portal boot that never opens the portal is
+// unrecoverable without a reflash.
+
+static void test_a_cold_boot_connects_to_the_saved_network() {
+  s_force_config_portal = false;
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;          // as it is at power-on
+  WiFi.link_up_on_begin = true;
+  g_espwifi.has_creds = true;
+  g_wm.reset = 0; g_wm.start_portal = 0;
+  TEST_ASSERT_TRUE_MESSAGE(wifiSetupConnect(),
+      "a cold boot with saved credentials must connect");
+  TEST_ASSERT_TRUE_MESSAGE(WiFi.begin_calls > 0,
+      "it has to actually try the saved network, not just read its status");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_wm.start_portal,
+      "and must not open the setup portal when the saved network works");
+}
+
+static void test_a_boot_with_no_credentials_opens_the_portal() {
+  s_force_config_portal = false;
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;
+  g_espwifi.has_creds = false;
+  g_wm.start_portal = 0;
+  g_wm.portal_active_ticks = 2;
+  g_wm.process_true_after = 1;             // the user finishes the form
+  WiFi.link_up_on_begin = true;
+  wifiSetupConnect();
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.start_portal > 0,
+      "with nothing saved there is nothing to connect to -- the portal must open");
+}
+
+static void test_a_forced_portal_boot_erases_credentials_and_opens_the_portal() {
+  // Arm the flag the way a long BOOT press does, then simulate the reboot.
+  mockBootButton(true);
+  bootButtonPollLongPress();
+  mockAdvanceMs(config::kBootResetHoldMs + 100);
+  bootButtonPollLongPress();
+  g_gpio.release(); bootButtonPollLongPress();
+  s_force_config_portal = false;
+
+  WiFi.reset();
+  WiFi.status_ = WL_CONNECTED;             // stale association from before
+  g_espwifi.has_creds = true;
+  g_wm.reset = 0; g_wm.erase = 0; g_wm.start_portal = 0;
+  g_wm.portal_active_ticks = 2;
+  g_wm.process_true_after = 1;
+  wifiSetupConnect();
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.reset > 0 || g_wm.erase > 0,
+      "a forced-portal boot must erase the credentials it was told to forget");
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.start_portal > 0,
+      "and must open the portal -- otherwise the device is unrecoverable "
+      "without a reflash");
+}
+
+// The blocking setup portal's service loop is the only thing polling BOOT while
+// it is up; without it a user stuck in the portal cannot long-press out.
+static void test_the_setup_portal_keeps_servicing_while_it_is_open() {
+  s_force_config_portal = false;
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;          // or wifiSetupConnect returns early
+  g_espwifi.has_creds = false;
+  g_wm.process = 0;
+  g_wm.portal_active_ticks = 5;
+  g_wm.process_true_after = 4;
+  WiFi.link_up_on_begin = true;
+  wifiSetupConnect();
+  char m[144];
+  snprintf(m, sizeof(m), "the portal loop called process() %d times", g_wm.process);
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.process >= 4, m);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // Runs first: s_force_config_portal is a file-static no test can clear.
@@ -463,6 +539,10 @@ int main(int, char**) {
   RUN_TEST(test_the_force_portal_flag_is_read_back_from_nvs_after_a_reboot);
   RUN_TEST(test_consuming_the_flag_clears_it_for_the_boot_after);
   RUN_TEST(test_a_clean_boot_does_not_force_the_portal);
+  RUN_TEST(test_a_cold_boot_connects_to_the_saved_network);
+  RUN_TEST(test_a_boot_with_no_credentials_opens_the_portal);
+  RUN_TEST(test_a_forced_portal_boot_erases_credentials_and_opens_the_portal);
+  RUN_TEST(test_the_setup_portal_keeps_servicing_while_it_is_open);
   RUN_TEST(test_the_ap_callback_caps_tx_power_and_shows_the_setup_screen);
   RUN_TEST(test_station_connect_also_caps_tx_power);
   RUN_TEST(test_connect_retries_are_bounded);

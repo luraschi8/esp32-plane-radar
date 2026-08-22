@@ -337,12 +337,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   // parses "Ok" into an empty document. Left unchecked that reads as an empty
   // sky: real traffic is wiped from the panel, and s_last_update_ms is
   // refreshed so the 60 s expiry never fires either. Insist on the shape.
-  if (!doc.is<JsonObject>()) {
-    Serial.println("adsb: response is not a JSON object");
-    stopSession();
-    return false;
-  }
-  // Insist on an actual array. The filter strips a malformed 'ac' value, so a
+  // Insist on an actual array. (A separate `is<JsonObject>()` check used to sit
+  // here; it was redundant -- every body it rejected, including an HTML page, a
+  // bare `null` and a top-level array, is rejected by this same guard, because
+  // `doc["ac"]` on a non-object yields null.) The filter strips a malformed value, so a
   // response carrying `"ac": 5` (or omitting it entirely) is indistinguishable
   // from one carrying `"ac": []` by the time we look -- and treating it as an
   // empty sky wipes real traffic off the panel. An empty sky is `[]`; anything
