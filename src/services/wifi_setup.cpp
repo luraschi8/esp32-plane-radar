@@ -14,6 +14,7 @@
 #endif
 
 #include "config.h"
+#include "debug_log.h"
 #include "services/radar_location.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
@@ -149,10 +150,17 @@ bool consumeForceConfigPortal() {
   }
 
   Preferences prefs;
+  // Read-only open of a namespace that is only ever written by a BOOT reset.
+  // On a device that has never been reset it does not exist, and the framework
+  // logs "nvs_open failed: NOT_FOUND" at [E] level. That is the expected steady
+  // state, not a fault -- this line says so in the log next to it.
   if (!prefs.begin(kWifiPrefsNamespace, true)) {
+    DEBUG_LOG("wifi: nvs namespace '%s' absent -- no pending force-portal flag "
+              "(the NOT_FOUND above is expected)", kWifiPrefsNamespace);
     return false;
   }
   const bool pending = prefs.getBool(kPrefsForcePortalKey, false);
+  DEBUG_LOG("wifi: force-portal flag %s", pending ? "SET" : "clear");
   prefs.end();
   if (!pending) {
     return false;
@@ -369,10 +377,17 @@ bool wifiShowsSetupScreenOnBoot() {
     return true;
   }
   Preferences prefs;
+  // Read-only open of a namespace that is only ever written by a BOOT reset.
+  // On a device that has never been reset it does not exist, and the framework
+  // logs "nvs_open failed: NOT_FOUND" at [E] level. That is the expected steady
+  // state, not a fault -- this line says so in the log next to it.
   if (!prefs.begin(kWifiPrefsNamespace, true)) {
+    DEBUG_LOG("wifi: nvs namespace '%s' absent -- no pending force-portal flag "
+              "(the NOT_FOUND above is expected)", kWifiPrefsNamespace);
     return false;
   }
   const bool pending = prefs.getBool(kPrefsForcePortalKey, false);
+  DEBUG_LOG("wifi: force-portal flag %s", pending ? "SET" : "clear");
   prefs.end();
   return pending;
 }

@@ -20,14 +20,27 @@ pio device monitor                   # serial, 115200 baud
 pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.bin
 ./scripts/merge-firmware.sh          # build + merge -> release/plane-radar-merged.bin
 ./scripts/merge-firmware.sh --no-build
+pio run -e supermini-debug           # same firmware + verbose logging (see below)
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-**Run `pio test -e native` before and after any change** — 200 host-side tests across eight suites, ~17 s under ASan/UBSan:
+**Verbose logging** lives in `include/debug_log.h` and is compiled out unless `PLANE_RADAR_DEBUG=1`, which is
+what `[env:supermini-debug]` adds. It is one build flag over identical sources, not a second code path. When
+off, the macros expand to `do {} while (0)`: no branch, no format strings in flash, and **arguments are not
+evaluated** — so never put a side effect inside a `DEBUG_LOG(...)` call, and guard anything expensive to
+compute for a message on `DEBUG_LOG_ENABLED` rather than relying on the macro to skip it. Both expansions are
+tested (`test_debug_log` for on, four tests in `test_settings` for off, including that the disabled form does
+not evaluate its arguments and survives an unbraced `if`/`else`). The release image is byte-for-byte the same
+size as before the facility existed, and `strings firmware.bin | grep 'dbg: '` finds nothing in it.
+Never call `DEBUG_LOG` from the per-aircraft draw loop, the per-segment runway loop, or the fetch task's inner
+loop: a 115200-baud line is ~90 us per character and would become the thing being measured.
+
+**Run `pio test -e native` before and after any change** — 211 host-side tests across nine suites, ~18 s under ASan/UBSan:
 `test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),
 `test_render_policy` (the render state machine), `test_adsb` (the whole fetch/parse pipeline against real
 captured payloads), `test_display` (rendering and runway overlay via a recording-canvas LovyanGFX mock), `test_wifi` (BOOT button, credential reset, force-portal flag, LAN portal lifecycle, status screens),
-`test_runway_cap` (forces the strip cap to reach the truncation path), and `test_main` (setup ordering and
+`test_runway_cap` (forces the strip cap to reach the truncation path), `test_debug_log` (the verbose-logging
+switch, compiled ON), and `test_main` (setup ordering and
 loop scheduling).
 
 The host env builds with `-fsanitize=address,undefined`, so a static-buffer overrun aborts naming the line
@@ -87,8 +100,8 @@ if it can't get it — in the sprite path that drops the whole frame and leaves 
 in the direct-draw fallback the grid lands without traffic. Either way the frame is reported as **not**
 painted, so `RenderPolicy` retries on the next tick instead of latching it. Never call `wifiLoop()` / WiFiManager `process()` from
 the fetch task — it is not thread-safe and `loop()` already owns it. `fetchTaskStackFree()` reports the task's
-stack headroom — ESP-IDF's high-water mark, i.e. bytes still **free**, logged every 32nd fetch (3,620 B free
-of 8,192, so ~4,572 B used, measured on device at the current TLS call depth); watch it
+stack headroom — ESP-IDF's high-water mark, i.e. bytes still **free**, logged every 32nd fetch (3,636 B free
+of 8,192, so ~4,556 B used, measured on device at the current TLS call depth); watch it
 after anything that deepens the fetch call path, since mbedTLS depth varies with the server's cert chain.
 
 ### Rendering model
@@ -96,11 +109,18 @@ after anything that deepens the fetch call path, since mbedTLS depth varies with
 `radarDisplayDraw()` and `radarDisplayRefreshAircraft()` both call `renderFrame()`, which composites the *whole*
 frame (background, rings, crosshairs, runway overlay, center dot, labels, aircraft) into an off-screen
 `LGFX_Sprite` and blits it in a single `pushSprite` — this is what kills flicker. Pixels are never cached
-between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~31 KB free, in a 9.2 KB largest block), but the runway
+between frames (a second 240x240x16bpp sprite would need 115 KB and there is ~22 KB free, in a ~9 KB largest block), but the runway
 overlay caches its *screen-space geometry* in `runway_overlay.cpp` and rebuilds only when the range preset or
-radar centre moves. Measured frame budget: **43.8 ms total (23 FPS ceiling)** = grid 10.5 + aircraft 21.5 + an
-11.6 ms `pushSprite` (43.6 ms of accounted phases; 43.8 ms measured end to end), the last being a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms
-theoretical). Rendering runs at `kRenderIntervalMs` (100 ms) independently of the ~3.5 s fetch cycle. The
+radar centre moves. Measured frame budget, from the debug build's own `frame:` line with 5–7 aircraft on screen:
+**~34.7 ms total (~29 FPS ceiling)** = grid 10.1–10.7 + traffic 12.8–13.0 + an 11.6 ms `pushSprite`. The blit is
+a pure SPI transfer at 80 MHz (115,200 B x 8 / 80 MHz = 11.5 ms theoretical, so it is at the wire limit) and is
+the one phase that does *not* vary. The traffic phase scales with the number of contacts — an earlier
+measurement in a busier sky put it at 21.5 ms for a 43.8 ms frame, so treat ~44 ms as the busy-sky figure and
+~35 ms as the quiet-sky one. **The first frame after a range change or a centre move costs ~28.7 ms in the
+grid phase alone**, because it rebuilds the runway screen-space cache; that is the spike to expect, not a
+regression. Rendering runs at `kRenderIntervalMs` (100 ms) independently of the fetch cycle, which measured
+**4.1 s** end to end (a 3 s gap plus a 405–562 ms fetch; the first fetch after boot takes ~1.8 s for the TLS
+handshake, and a slow one was observed at 5.1 s). The
 sprite is 240×240×16bpp ≈ **115 KB**, on a
 chip with ~320 KB heap, so any new large allocation must be checked against that. `ensureFrameSprite()` failing
 falls back to drawing straight to the panel.
@@ -153,17 +173,30 @@ portal survived the blocking fetch; that hook is gone — the fetch runs on its 
 ## Non-negotiable: speed and memory come first
 
 This is a 160 MHz single-core RISC-V part with **no FPU** and ~320 KB of heap, of which the frame
-sprite alone takes 115 KB and mbedTLS permanently holds ~33 KB for the reused TLS session. Measured with the TLS session held: free heap at the start of a request is **30,856 B — bit-identical across
-38 consecutive fetches**, and the **largest contiguous block is 9,204 B**. A fetch transiently consumes ~6 KB on device
+sprite alone takes 115 KB and mbedTLS permanently holds ~33 KB for the reused TLS session. Measured on device with `pio run -e supermini-debug` (see `include/debug_log.h`), which logs the whole
+allocation ladder at boot and around every fetch:
+
+| Point | Free heap | Largest block |
+|---|---|---|
+| At boot | 253,884 B | 229,364 B |
+| After `displayInit()` | 250,092 B | 229,364 B |
+| After the 115 KB frame sprite | 134,872 B | 114,676 B |
+| After Wi-Fi + fetch task | 81,464 B | 61,428 B |
+| **Steady state, TLS session held** | **21,688 – 23,080 B** | **7,668 – 9,204 B** |
+
+The steady-state figures move a little from fetch to fetch with the size of the sky; over 28 consecutive
+fetches the largest block was 9,204 B nineteen times, 8,180 B seven times and 7,668 B three times. (An earlier
+note here claimed 30,856 B free and a bit-identical 9,204 B every time; that was a narrower sample taken at a
+different point in the cycle.) **Design against the low end: ~7.7 KB.** A fetch transiently consumes ~6 KB on device
 (the filtered JSON document, in 4 KB pool chunks) and returns it; the same document measures ~9.6 KB peak
 when parsed on a host with a tracking allocator against a captured 23-aircraft payload — the device figure is
 lower simply because the local sky is quieter. mbedTLS permanently holds ~33 KB as *two*
 ~16.4 KB blocks plus a ~2.5 KB context; the frame sprite holds 115 KB; the fetch task's 8 KB stack and the
 second aircraft buffer come out of the same pool.
 
-**That 9,204 B largest block is the number to design against.** One existing consumer already brushes it:
+**That largest block is the number to design against.** One existing consumer already brushes it:
 WiFiManager assembles each portal page into a single contiguous `String`, and the `/wifi` scan page crosses
-9.2 KB at roughly 16 visible access points — so in a dense-Wi-Fi area that page can fail to render while the
+7.7–9.2 KB at roughly 14–16 visible access points — so in a dense-Wi-Fi area that page can fail to render while the
 radar is running. `/param` is far smaller, and the setup portal (after a BOOT reset) runs with no TLS session
 held. Nothing may request a larger contiguous
 allocation at runtime. It is also why the fetch task releases the TLS session (`s_client.stop()`) the moment

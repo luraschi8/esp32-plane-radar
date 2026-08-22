@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "../mocks/mock_globals.h"
+#include "debug_log.h"
 #include "../../src/services/radar_location.cpp"
 #include "../../src/ui/radar_range.cpp"
 
@@ -299,6 +300,50 @@ static void test_clear_restores_defaults() {
   TEST_ASSERT_EQUAL_DOUBLE(config::kDefaultRadarLat, services::location::lat());
 }
 
+// ---------------------------------------------- the debug switch, OFF ------
+// test_debug_log covers the enabled expansion; this covers the default one.
+// They cannot share a translation unit: debug_log.h is #pragma once and picks
+// its expansion at include time. This file includes it WITHOUT defining the
+// flag, which is what every production build does.
+
+static void test_debug_logging_is_off_by_default() {
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, DEBUG_LOG_ENABLED,
+      "verbose logging must never be on in a normal build");
+}
+
+static void test_a_disabled_debug_line_prints_nothing() {
+  Serial.capture = true; Serial.log.clear();
+  DEBUG_LOG("this must not appear %d", 1);
+  DEBUG_LOG_HEAP("nor this");
+  char m[192];
+  snprintf(m, sizeof(m), "serial log was: '%s'", Serial.log.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.empty(), m);
+  Serial.capture = false;
+}
+
+// The disabled macro must not evaluate its arguments -- a side effect hidden in
+// a log call would exist in debug builds and vanish in release ones, which is
+// the hardest kind of difference to track down. The header documents this
+// rule; this is what enforces it.
+static void test_a_disabled_debug_line_does_not_evaluate_its_arguments() {
+  int calls = 0;
+  auto bump = [&calls]() { return ++calls; };
+  DEBUG_LOG("value %d", bump());
+  DEBUG_LOG_HEAP(bump() ? "a" : "b");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, calls,
+      "arguments must not be evaluated when logging is compiled out");
+}
+
+// It has to be usable as a statement anywhere a call would be, including as the
+// lone body of an unbraced if -- the do/while(0) form is what guarantees that.
+static void test_a_disabled_debug_line_is_a_well_formed_statement() {
+  int taken = 0;
+  if (DEBUG_LOG_ENABLED) DEBUG_LOG("in the if");
+  else taken = 1;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, taken,
+      "the macro must not swallow or detach a following else");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_presets_are_sorted_and_labelled_uniquely);
@@ -314,6 +359,10 @@ int main(int, char**) {
   RUN_TEST(test_units_and_runways_are_actually_persisted);
   RUN_TEST(test_reset_restores_both_toggles_and_clears_storage);
   RUN_TEST(test_reset_preserves_the_range_preset);
+  RUN_TEST(test_debug_logging_is_off_by_default);
+  RUN_TEST(test_a_disabled_debug_line_prints_nothing);
+  RUN_TEST(test_a_disabled_debug_line_does_not_evaluate_its_arguments);
+  RUN_TEST(test_a_disabled_debug_line_is_a_well_formed_statement);
   RUN_TEST(test_a_refused_nvs_write_still_applies_the_location);
   RUN_TEST(test_invalid_coordinates_are_rejected_and_change_nothing);
   RUN_TEST(test_a_refused_nvs_write_still_applies_the_range_settings);

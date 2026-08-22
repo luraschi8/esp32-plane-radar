@@ -1,5 +1,7 @@
 #include "ui/radar_display.h"
 
+#include "debug_log.h"
+
 #include <lgfx/v1/lgfx_fonts.hpp>
 
 #include <algorithm>
@@ -744,12 +746,15 @@ bool ensureFrameSprite() {
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 bool renderFrame() {
+  const unsigned long t_grid = DEBUG_LOG_ENABLED ? micros() : 0;
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  const unsigned long t_traffic = DEBUG_LOG_ENABLED ? micros() : 0;
   bool traffic_drawn = false;
   {
     const DrawScope scope(s_frame);
     traffic_drawn = drawAircraft();
   }
+  const unsigned long t_blit = DEBUG_LOG_ENABLED ? micros() : 0;
   // The sprite now holds a grid with no traffic on it. Blitting that would
   // flash every target off for a frame, so leave the last complete frame on
   // the panel and try again on the next tick.
@@ -758,6 +763,18 @@ bool renderFrame() {
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
+#if DEBUG_LOG_ENABLED
+  // Once a second at most: a serial line is ~90 us per character at 115200 and
+  // would itself become the thing being measured inside a 43.8 ms frame.
+  static unsigned long s_last_frame_report_ms = 0;
+  const unsigned long now_ms = millis();
+  if (now_ms - s_last_frame_report_ms >= 1000) {
+    s_last_frame_report_ms = now_ms;
+    const unsigned long t_end = micros();
+    DEBUG_LOG("frame: grid %lu us + traffic %lu us + blit %lu us = %lu us total",
+              t_traffic - t_grid, t_blit - t_traffic, t_end - t_blit, t_end - t_grid);
+  }
+#endif
   return true;
 }
 

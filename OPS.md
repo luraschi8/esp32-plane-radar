@@ -23,7 +23,8 @@ export PATH="$HOME/.platformio/penv/bin:$PATH" # optional, for the current shell
 `scripts/merge-firmware.sh` already falls back to that path automatically. Every `pio` command below
 works with either form.
 
-There are two environments: **`supermini`** (the firmware) and **`native`** (host unit tests, section 3.0).
+There are three environments: **`supermini`** (the firmware), **`supermini-debug`** (the same firmware with
+verbose logging compiled in — section 3.4) and **`native`** (host unit tests, section 3.0).
 `default_envs = supermini` makes a bare `pio run` build the firmware only; `-e supermini` is optional but
 explicit. The test env is always selected deliberately with `-e native`.
 
@@ -49,6 +50,8 @@ Artifacts land in `.pio/build/supermini/`:
 Useful variants:
 
 ```bash
+pio run                           # same as -e supermini (default_envs)
+pio run -e supermini-debug        # identical firmware + verbose logging (section 3.4)
 pio run -e supermini -t clean     # drop object files, keep downloaded packages
 pio run -e supermini -t merge     # produce firmware-merged.bin (builds the app first if needed)
 rm -rf .pio                       # nuclear: also re-downloads toolchain + libs
@@ -64,7 +67,7 @@ linter or formatter. Verification is: tests pass, it compiles cleanly, it fits, 
 ### 3.0 Unit tests
 
 ```bash
-pio test -e native                 # whole suite (200 tests, 8 suites) in ~17 s, ASan+UBSan on
+pio test -e native                 # whole suite (211 tests, 9 suites) in ~18 s, ASan+UBSan on
 pio test -e native -f test_geo     # one suite
 ```
 
@@ -113,7 +116,31 @@ net80211) dominates the total. The app partition is 3 MB.
 
 ### 3.3 Behaves on hardware
 
-Flash (section 4), open the serial monitor, and walk the checklist:
+Flash (section 4), open the serial monitor, and walk the checklist.
+
+**Three `[E]`-level lines at every boot are expected and are not faults.** They come from the framework, not
+from this project, and a healthy boot looks like this:
+
+```
+Plane Radar
+[   735][E][esp32-hal-spi.c:227] spiAttachMISO(): SPI Does not have default pins on ESP32C3!
+[   930][E][Preferences.cpp:50] begin(): nvs_open failed: NOT_FOUND
+[   933][E][Preferences.cpp:50] begin(): nvs_open failed: NOT_FOUND
+Connecting to WiFi (portal opens if needed)...
+Connected: <ssid>  IP 192.168.1.96
+LAN config: http://plane-radar.local or http://192.168.1.96
+adsb: 7 aircraft (task stack free 3636 B)
+```
+
+- `spiAttachMISO` — the display is write-only, so `pin_miso = -1` in `lgfx_config.hpp`. Nothing to fix.
+- Both `nvs_open failed: NOT_FOUND` lines are the **`wifi` namespace**, read twice at boot for the
+  force-portal flag. That namespace is only ever written by a BOOT reset, so on a device that has never been
+  reset it does not exist. Confirmed with the debug build, which prints
+  `dbg: wifi: nvs namespace 'wifi' absent -- no pending force-portal flag` next to each one. If you see a
+  *third* such line, that one is real: it means `radar` or `planeradar` is missing and the location or the
+  range preset has been lost.
+
+Then the checklist:
 
 | Step | Expected |
 |------|----------|
@@ -132,6 +159,37 @@ portal and confirm that a nearby airport's runways land in the right place and o
 aircraft east and west of you are not stretched outward. The projection scales longitude by
 `cos(centre latitude)`; without it, everything east-west drifts outward by `1/cos(lat)` — about 1.64x
 at 52 deg N. `src/ui/radar_geo.cpp` is the single place that math lives.
+
+---
+
+### 3.4 Diagnosing on real hardware — the debug build
+
+`include/debug_log.h` adds verbose logging that is **compiled out of every normal build**. Turn it on by
+flashing the debug environment; the sources are identical, only `-D PLANE_RADAR_DEBUG=1` differs:
+
+```bash
+pio run -e supermini-debug -t upload && pio device monitor
+```
+
+Every line is prefixed `dbg: ` so it is easy to filter. What you get:
+
+| Line | Use it for |
+|------|-----------|
+| `dbg: heap <stage> free N largest N` | at boot, after the display, after the 115 KB sprite, after setup, and around every fetch — this is how the memory table in CLAUDE.md was measured |
+| `dbg: location: …` / `dbg: range: …` | what the device actually loaded from NVS, and whether each namespace existed at all |
+| `dbg: wifi: force-portal flag …` | whether a BOOT reset is pending |
+| `dbg: fetch: N aircraft kept, N ms, stack free N B` | fetch cost and fetch-task stack headroom, every cycle instead of every 32nd |
+| `dbg: frame: grid N us + traffic N us + blit N us` | the frame budget, throttled to one line per second so the logging does not distort what it measures |
+
+Flash `-e supermini` again afterwards. Verify the release image really is clean:
+
+```bash
+pio run -e supermini && strings .pio/build/supermini/firmware.bin | grep -c "dbg: "   # must print 0
+```
+
+When adding a call site: never inside the per-aircraft draw loop, the per-segment runway loop, or the fetch
+task's inner loop — a serial line at 115200 baud costs ~90 us per character, against a ~35 ms frame. And never
+put a side effect in a `DEBUG_LOG` argument: arguments are not evaluated when logging is compiled out.
 
 ---
 
@@ -205,7 +263,7 @@ pio run -e supermini -t erase
 
 | Workflow | Trigger | Output |
 |----------|---------|--------|
-| `.github/workflows/build.yml` | push to `main`/`master`, any PR, manual dispatch; runs `pio test -e native` then builds | artifact `plane-radar-supermini` (merged + split `.bin`, ~90 days) |
+| `.github/workflows/build.yml` | push to `main`/`master`, any PR, manual dispatch; runs `pio test -e native`, then builds both `supermini` and `supermini-debug` | artifact `plane-radar-supermini` (merged + split `.bin`, ~90 days) |
 | `.github/workflows/release.yml` | tag `v*`, or manual dispatch (falls back to `manual-<sha7>`) | GitHub Release with `plane-radar-<tag>.bin` + `.sha256` |
 
 ```bash
@@ -241,7 +299,9 @@ the flash figure — the dataset is the largest project-owned contributor to ima
 | Blank / white display | Check SPI wiring against the README table; `kDisplayInvert` and `kDisplayRgbOrder` in `include/config.h` vary between GC9A01 modules |
 | Colours inverted or red/blue swapped | Flip `kDisplayInvert` / `kDisplayRgbOrder`. `initPalette()` swaps R/B for the aircraft colour when `kDisplayRgbOrder` is set |
 | Reboot loop when Wi-Fi connects | Brownout — the Super Mini's regulator is marginal at full TX power. TX power is deliberately capped at `WIFI_POWER_8_5dBm` in both AP and STA paths; do not raise it. Also try a better USB supply |
-| `radar: frame sprite alloc failed` | Out of heap for the 115 KB frame buffer; display falls back to direct drawing |
+| `radar: frame sprite alloc failed` | Out of heap for the 115 KB frame buffer; display falls back to direct drawing. Flash `-e supermini-debug` to see the heap ladder at boot and find what took the space |
+| `[E] spiAttachMISO(): SPI Does not have default pins` at boot | Expected — the display bus is write-only (`pin_miso = -1`). Not a fault |
+| `[E] nvs_open failed: NOT_FOUND` twice at boot | Expected — the `wifi` namespace only exists after a BOOT reset (section 3.3). A **third** occurrence means the location or range preset was lost |
 | `adsb: HTTP -1`, `adsb: no response stream`, `adsb: JSON parse error: … (heap=… largest=…)` | Transient network or adsb.fi hiccup; the previous frame is kept and the fetch task retries after the next gap. After 60 s with no successful fetch the traffic layer is cleared rather than shown stale |
 | Portal saves but nothing changes | `Invalid lat/lon in portal — keeping previous location` on serial means the coordinates failed parsing or range validation |
 | `.local` address won't resolve | mDNS is slow or blocked on some clients; use the IP printed on serial at boot |

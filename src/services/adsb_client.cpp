@@ -1,5 +1,7 @@
 #include "services/adsb_client.h"
 
+#include "debug_log.h"
+
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -275,6 +277,7 @@ void stopSession() {
 }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+  const unsigned long t_start = DEBUG_LOG_ENABLED ? millis() : 0;
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;
@@ -351,6 +354,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     return false;
   }
 
+  DEBUG_LOG_HEAP("after parse");
   const uint8_t back = s_front ^ 1;
   Aircraft* out = s_buffers[back];
 
@@ -392,6 +396,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   // Periodically report the task's stack headroom: the mbedTLS handshake depth
   // varies with the server's certificate chain, so this can drift with no code
   // change. Rare enough to be free, frequent enough to catch creep.
+  DEBUG_LOG("fetch: %u aircraft kept, %lu ms, stack free %u B",
+            static_cast<unsigned>(n), millis() - t_start, fetchTaskStackFree());
+  DEBUG_LOG_HEAP("after publish");
   static uint8_t stack_report = 0;
   if ((stack_report++ & 0x1F) == 0) {
     Serial.printf("adsb: %u aircraft (task stack free %u B)\n",

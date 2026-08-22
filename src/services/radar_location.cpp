@@ -1,5 +1,7 @@
 #include "services/radar_location.h"
 
+#include "debug_log.h"
+
 #include <Preferences.h>
 #include <cstdlib>
 #include <cstring>
@@ -60,7 +62,12 @@ bool persist(double lat, double lon) {
 
 void init() {
   Preferences prefs;
-  prefs.begin(kPrefsNamespace, true);
+  // A read-only open of a namespace that has never been written logs
+  // "nvs_open failed: NOT_FOUND" from the framework. That is expected on a
+  // first boot and is not an error; DEBUG_LOG says which way it went.
+  const bool opened = prefs.begin(kPrefsNamespace, true);
+  DEBUG_LOG("location: nvs namespace '%s' %s", kPrefsNamespace,
+            opened ? "opened" : "absent (first boot or after a reset)");
   if (prefs.isKey(kKeyLat) && prefs.isKey(kKeyLon)) {
     const double lat = prefs.getDouble(kKeyLat, config::kDefaultRadarLat);
     const double lon = prefs.getDouble(kKeyLon, config::kDefaultRadarLon);
@@ -70,6 +77,8 @@ void init() {
     }
   }
   prefs.end();
+  DEBUG_LOG("location: centre %.6f, %.6f (%s)", s_lat, s_lon,
+            opened ? "from NVS" : "compiled-in default");
 }
 
 double lat() { return s_lat; }

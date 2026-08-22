@@ -1,5 +1,7 @@
 #include "ui/radar_range.h"
 
+#include "debug_log.h"
+
 #include "ui/radar_theme.h"
 
 #include <Preferences.h>
@@ -68,6 +70,9 @@ bool portalCheckboxChecked(const char* value) {
 
 void rangeInit() {
   if (!s_prefs.begin(kPrefsNamespace, true)) {
+    // Expected on a first boot: the framework logs "nvs_open failed: NOT_FOUND"
+    // for a read-only open of a namespace nothing has written yet.
+    DEBUG_LOG("range: nvs namespace '%s' absent, using defaults", kPrefsNamespace);
     return;
   }
   const uint8_t saved = s_prefs.getUChar(kPrefsRangeKey, kDefaultRangeIndex);
@@ -76,6 +81,10 @@ void rangeInit() {
   s_use_miles = s_prefs.getBool(kPrefsMilesKey, false);
   s_show_runways = s_prefs.getBool(kPrefsRunwaysKey, true);
   s_prefs.end();
+  DEBUG_LOG("range: preset %u (ring3 %.0f km, outer %.1f km), %s, runways %s",
+            static_cast<unsigned>(s_range_index), kRangePresets[s_range_index].ring3_km,
+            kRangePresets[s_range_index].outer_km, s_use_miles ? "miles" : "km",
+            s_show_runways ? "on" : "off");
 }
 
 void rangeNext() {

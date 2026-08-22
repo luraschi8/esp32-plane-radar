@@ -43,6 +43,12 @@ jobs:
       - name: Build
         run: pio run -e supermini
 
+      # The debug logging is compiled out of the release image, so nothing else
+      # would catch a format-string or call-site break in it until someone
+      # needed it to diagnose a real problem.
+      - name: Build debug-logging variant
+        run: pio run -e supermini-debug
+
       - name: Merge web-flash image
         run: pio run -t merge -e supermini
 

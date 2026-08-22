@@ -111,6 +111,7 @@ Range presets: `include/ui/radar_range.h` (`kRangePresets`).
 ```
 include/
   config.h
+  debug_log.h              — opt-in verbose logging, compiled out unless PLANE_RADAR_DEBUG=1
   hardware/
     lgfx_config.hpp
     display.h
@@ -169,7 +170,11 @@ pio device monitor
 
 Full build / verify / flash procedure, including troubleshooting: **[OPS.md](OPS.md)**.
 
-- PlatformIO env: **`supermini`**
+Three `[E]`-level lines at boot (`spiAttachMISO`, two `nvs_open failed: NOT_FOUND`) are expected and come from
+the framework — see [OPS.md §3.3](OPS.md).
+
+- PlatformIO envs: **`supermini`** (the firmware), **`supermini-debug`** (same firmware, verbose logging —
+  [OPS.md §3.4](OPS.md)), **`native`** (host unit tests, `pio test -e native`)
 - Serial: **115200** baud
 - USB CDC on boot enabled in `platformio.ini` for the Super Mini
 
@@ -200,7 +205,7 @@ Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with C
 
 | Workflow | When | Output |
 |----------|------|--------|
-| [Build](.github/workflows/build.yml) | Push to `main`/`master`, any PR, manual dispatch | Runs the host test suite, then artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
+| [Build](.github/workflows/build.yml) | Push to `main`/`master`, any PR, manual dispatch | Runs the host test suite, builds the firmware and the debug variant; artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
 | [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) or manual dispatch | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
 
 To ship a version users can download:

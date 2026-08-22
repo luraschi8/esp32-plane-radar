@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "debug_log.h"
 #include "hardware/display.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
@@ -72,14 +73,20 @@ void setup() {
   Serial.println();
   Serial.println("Plane Radar");
 
+  DEBUG_LOG("build: debug logging ON (PLANE_RADAR_DEBUG=1)");
+  DEBUG_LOG_HEAP("at boot");
   bootButtonInit();
   displayInit();
+  DEBUG_LOG_HEAP("after display");
   // Before WiFi: the frame buffer needs 115 KB contiguous and the network stack
   // plus the reused TLS session leave a largest free block of ~9 KB. Claimed
   // here it always succeeds; claimed later it may never succeed again.
   if (!ui::radarDisplayReserveFrame()) {
     Serial.println("radar: frame buffer unavailable — falling back to direct draw");
   }
+  // The 115 KB sprite is the single biggest allocation in the system; this is
+  // the line to look at first if it ever starts failing.
+  DEBUG_LOG_HEAP("after sprite");
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }
@@ -93,6 +100,8 @@ void setup() {
   // ADS-B runs on its own task from here: the fetch blocks, almost all of it
   // waiting on the socket, and loop() must keep rendering meanwhile.
   g_fetch_task_ok = services::adsb::startFetchTask();
+  DEBUG_LOG("setup: fetch task %s", g_fetch_task_ok ? "started" : "FAILED");
+  DEBUG_LOG_HEAP("after setup");
 }
 
 void loop() {
@@ -102,6 +111,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     if (g_radar_visible) {
       Serial.println("WiFi lost — will reconnect");
+      DEBUG_LOG_HEAP("on wifi loss");
       g_radar_visible = false;
       g_render.reset();
     }
