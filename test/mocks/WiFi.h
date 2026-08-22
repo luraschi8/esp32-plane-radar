@@ -20,7 +20,7 @@ struct MockWiFi {
   String ssid{"TestNet"};
   int mode_calls = 0, begin_calls = 0, disconnect_calls = 0, txpower_calls = 0;
   int status() const { return status_; }
-  void mode(int) { ++mode_calls; }
+  void mode(int) { mockEvent("wifi_mode"); ++mode_calls; }
   void setTxPower(wifi_power_t) { ++txpower_calls; }
   void setSleep(int) {}
   void setAutoReconnect(bool) {}

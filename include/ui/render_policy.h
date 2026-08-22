@@ -36,9 +36,6 @@ class RenderPolicy {
     needs_redraw_ = false;
   }
 
-  /** A redraw is owed for a reason other than traffic (e.g. the range changed). */
-  void requestRedraw() { needs_redraw_ = true; }
-
   /** Connection lost: nothing on the panel can be trusted as current. */
   void reset() {
     traffic_drawn_ = false;

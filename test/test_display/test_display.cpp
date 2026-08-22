@@ -723,6 +723,39 @@ static void test_no_text_or_rect_is_drawn_outside_the_panel() {
   }
 }
 
+// --------------------------------------------- pure geometry helpers ------
+
+// The whole point of segmentIntersectsDisc is the chord case: BOTH endpoints
+// outside the disc but the segment crossing it. Driven through rebuildCache it
+// only ever sees the trivial inside/far-away cases.
+static void test_segment_disc_intersection_handles_the_chord_case() {
+  using ui::runway::segmentIntersectsDisc;
+  const int cx = kCenterX, cy = kCenterY, r = kGridOuterRadius;
+  TEST_ASSERT_TRUE_MESSAGE(segmentIntersectsDisc(cx - 400, cy, cx + 400, cy),
+      "a line straight through the centre must intersect");
+  TEST_ASSERT_TRUE_MESSAGE(segmentIntersectsDisc(cx, cy, cx + 400, cy),
+      "an endpoint inside must intersect");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx - 400, cy + r + 40, cx + 400, cy + r + 40),
+      "a line passing well clear must not");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx + 400, cy, cx + 500, cy),
+      "a segment entirely beyond the disc must not, even though its infinite "
+      "line would cross");
+  TEST_ASSERT_FALSE_MESSAGE(segmentIntersectsDisc(cx + 400, cy, cx + 400, cy),
+      "a degenerate zero-length segment outside must not");
+}
+
+static void test_speed_vector_length_boundaries() {
+  using ui::speedLineLengthPx;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, speedLineLengthPx(0.0f),
+      "a stationary target has no vector");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, speedLineLengthPx(-5.0f),
+      "a negative ground speed must not produce a vector");
+  TEST_ASSERT_TRUE_MESSAGE(speedLineLengthPx(3.0f) >= kAircraftSpeedLineMinPx,
+      "a barely-moving target still gets the minimum visible stub");
+  TEST_ASSERT_TRUE_MESSAGE(speedLineLengthPx(500.0f) > speedLineLengthPx(200.0f),
+      "faster targets must draw longer vectors");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These two must run first: the frame sprite is created once and cached in a
@@ -755,6 +788,8 @@ int main(int, char**) {
   RUN_TEST(test_tags_never_overlap_with_the_smooth_font_either);
   RUN_TEST(test_runway_labels_render_with_the_smooth_font);
   RUN_TEST(test_no_text_or_rect_is_drawn_outside_the_panel);
+  RUN_TEST(test_segment_disc_intersection_handles_the_chord_case);
+  RUN_TEST(test_speed_vector_length_boundaries);
   RUN_TEST(test_runways_are_drawn_at_a_real_airport);
   RUN_TEST(test_no_runways_when_the_overlay_is_switched_off);
   RUN_TEST(test_no_runways_in_the_middle_of_the_ocean);

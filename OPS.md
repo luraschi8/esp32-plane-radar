@@ -62,7 +62,7 @@ linter or formatter. Verification is: tests pass, it compiles cleanly, it fits, 
 ### 3.0 Unit tests
 
 ```bash
-pio test -e native                 # whole suite, runs on this machine in ~3 s
+pio test -e native                 # whole suite (149 tests, 8 suites) in ~6 s
 pio test -e native -f test_geo     # one suite
 ```
 
@@ -97,7 +97,7 @@ The size report at the end of every build is the memory budget. Current baseline
 
 ```
 RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
-Flash: [====      ]  39.7% (used 1247512 bytes from 3145728 bytes)
+Flash: [====      ]  39.7% (used 1247622 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite

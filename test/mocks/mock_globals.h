@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 uint32_t g_mock_millis = 0;
+std::vector<std::string> g_events;
 MockSerial Serial;
 MockNvs g_nvs;
 #include <WiFi.h>

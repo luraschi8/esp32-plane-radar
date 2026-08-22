@@ -7,6 +7,15 @@
 #include <string>
 #include <cmath>
 #include <Stream.h>
+#include <vector>
+
+/** Ordered log of notable mock events, for asserting sequence not just counts. */
+extern std::vector<std::string> g_events;
+inline void mockEvent(const char* what) { g_events.push_back(what); }
+inline int mockEventIndex(const char* what) {
+  for (size_t i = 0; i < g_events.size(); ++i) if (g_events[i] == what) return (int)i;
+  return -1;
+}
 
 /**
  * 32-bit like the device (Arduino's millis() is uint32_t there, though

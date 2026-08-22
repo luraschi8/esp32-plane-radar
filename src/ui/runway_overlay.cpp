@@ -85,17 +85,23 @@ bool segmentIntersectsDisc(int x0, int y0, int x1, int y1) {
   const int dy = y1 - y0;
   const int fx = x0 - cx;
   const int fy = y0 - cy;
-  const int a = dx * dx + dy * dy;
+  // 64-bit for the discriminant: b*b overflows int32 once a segment endpoint is
+  // more than a few hundred pixels out. Today rebuildCache() pre-filters
+  // airports to the fetch radius so that cannot happen, but that safety lives in
+  // a different function -- a narrower preset or a wider disc would reach it.
+  // This runs on cache rebuild only, never per frame.
+  const int64_t a = static_cast<int64_t>(dx) * dx + static_cast<int64_t>(dy) * dy;
   if (a == 0) {
     return false;
   }
-  const int b = 2 * (fx * dx + fy * dy);
-  const int c = fx * fx + fy * fy - r_sq;
-  int disc = b * b - 4 * a * c;
-  if (disc < 0) {
+  const int64_t b = 2 * (static_cast<int64_t>(fx) * dx + static_cast<int64_t>(fy) * dy);
+  const int64_t c =
+      static_cast<int64_t>(fx) * fx + static_cast<int64_t>(fy) * fy - r_sq;
+  const int64_t disc_sq = b * b - 4 * a * c;
+  if (disc_sq < 0) {
     return false;
   }
-  disc = static_cast<int>(sqrtf(static_cast<float>(disc)));
+  const float disc = sqrtf(static_cast<float>(disc_sq));
   const float inv2a = 1.0f / (2.0f * static_cast<float>(a));
   const float t0 = (-static_cast<float>(b) - disc) * inv2a;
   const float t1 = (-static_cast<float>(b) + disc) * inv2a;

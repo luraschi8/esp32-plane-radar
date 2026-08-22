@@ -162,6 +162,7 @@ class LGFX_Sprite : public lgfx::LGFXBase {
   explicit LGFX_Sprite(lgfx::LGFXBase* = nullptr) {}
   void setColorDepth(int d) { depth_ = d; }
   bool createSprite(int w, int h) {
+    mockEvent("sprite_alloc");
     ++g_gfx.sprite_alloc_attempts;
     if (g_gfx.sprite_alloc_fails) return false;
     w_ = w; h_ = h; return true;

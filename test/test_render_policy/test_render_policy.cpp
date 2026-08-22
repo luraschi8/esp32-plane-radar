@@ -75,26 +75,28 @@ static void test_declined_frame_never_updates_the_record() {
 }
 
 // THE RANGE-TAP BUG: preset advanced, repaint declined, nothing scheduled.
-static void test_range_tap_redraw_survives_an_empty_sky() {
-  RenderPolicy p;                       // no traffic, nothing ever drawn
-  p.requestRedraw();                    // BOOT tap changed the preset
-  TEST_ASSERT_TRUE_MESSAGE(tick(p, false), "the new rings must be painted");
-  TEST_ASSERT_FALSE_MESSAGE(tick(p, false), "and then it settles");
+// THE RANGE-TAP PATH, as main.cpp actually drives it: onRangeTap() repaints and
+// reports the result. A declined repaint with an empty sky must still be owed,
+// or the rings keep showing the previous preset with nothing scheduled.
+static void test_a_declined_range_tap_redraw_is_retried_on_an_empty_sky() {
+  RenderPolicy p;                              // no traffic, nothing ever drawn
+  p.onFrameDrawn(/*traffic=*/false, /*blitted=*/false);   // repaint declined
+  TEST_ASSERT_TRUE_MESSAGE(p.needsRedraw(), "the repaint is still owed");
+  TEST_ASSERT_TRUE_MESSAGE(tick(p, false), "and loop() must retry it");
+  TEST_ASSERT_FALSE_MESSAGE(tick(p, false), "then settle");
 }
 
-static void test_range_tap_declined_is_still_owed() {
+static void test_a_successful_range_tap_redraw_settles_immediately() {
   RenderPolicy p;
-  p.requestRedraw();
-  TEST_ASSERT_TRUE(tick(p, false, /*blit_succeeds=*/false));
-  TEST_ASSERT_TRUE_MESSAGE(p.needsRedraw(), "declined tap redraw is still owed");
-  TEST_ASSERT_TRUE(tick(p, false, true));
-  TEST_ASSERT_FALSE(tick(p, false));
+  p.onFrameDrawn(false, /*blitted=*/true);
+  TEST_ASSERT_FALSE(p.needsRedraw());
+  TEST_ASSERT_FALSE_MESSAGE(tick(p, false), "nothing further is owed");
 }
 
 static void test_reset_clears_the_record_on_connection_loss() {
   RenderPolicy p;
   tick(p, true);
-  p.requestRedraw();
+  p.onFrameDrawn(false, /*blitted=*/false);   // a declined repaint
   p.reset();
   TEST_ASSERT_FALSE(p.trafficDrawn());
   TEST_ASSERT_FALSE(p.needsRedraw());
@@ -120,8 +122,8 @@ int main(int, char**) {
   RUN_TEST(test_declined_clearing_frame_is_retried_until_it_lands);
   RUN_TEST(test_declined_frame_with_traffic_is_retried);
   RUN_TEST(test_declined_frame_never_updates_the_record);
-  RUN_TEST(test_range_tap_redraw_survives_an_empty_sky);
-  RUN_TEST(test_range_tap_declined_is_still_owed);
+  RUN_TEST(test_a_declined_range_tap_redraw_is_retried_on_an_empty_sky);
+  RUN_TEST(test_a_successful_range_tap_redraw_settles_immediately);
   RUN_TEST(test_reset_clears_the_record_on_connection_loss);
   RUN_TEST(test_repeated_cycles_do_not_leak_owed_frames);
   return UNITY_END();

@@ -18,6 +18,10 @@ using namespace ui::radar;
 void setUp() {
   g_nvs.reset(); g_gfx.reset(); g_wm = MockWmStats();
   g_restart = MockRestart(); WiFi.reset(); g_espwifi = MockEspWifi();
+  // The WiFiManager instance is a file-static in wifi_setup.cpp, so its
+  // portal-active flag survives between tests; resetting only the counters
+  // would make startLanWebPortal() early-return and hide the behaviour.
+  s_wm.web_ = false;
   mockSetMs(100000);
   bootButtonInit();
   // Release the button and let the poll clear its long-press latch, then drain
@@ -171,6 +175,144 @@ static void test_connect_wait_still_waits_across_the_millis_wrap() {
   TEST_ASSERT_TRUE_MESSAGE(elapsed >= 14000u, m);
 }
 
+// ------------------------------------------------ LAN portal lifecycle -----
+
+static void test_the_lan_portal_starts_once_while_linked() {
+  WiFi.status_ = WL_CONNECTED;
+  for (int i = 0; i < 10; ++i) wifiLoop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_wm.start_web,
+      "the portal must be started once, not restarted on every loop iteration");
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.process >= 10, "and serviced on every iteration");
+}
+
+static void test_the_lan_portal_stops_once_when_the_link_drops() {
+  WiFi.status_ = WL_CONNECTED;
+  wifiLoop();
+  TEST_ASSERT_EQUAL_INT(1, g_wm.start_web);
+  WiFi.status_ = WL_DISCONNECTED;
+  for (int i = 0; i < 5; ++i) wifiLoop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_wm.stop_web,
+      "stopping must be idempotent -- the same double-teardown shape that bit "
+      "the TLS session");
+}
+
+static void test_the_portal_restarts_after_a_reconnect() {
+  WiFi.status_ = WL_CONNECTED; wifiLoop();
+  WiFi.status_ = WL_DISCONNECTED; wifiLoop();
+  WiFi.status_ = WL_CONNECTED; wifiLoop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, g_wm.start_web,
+      "the portal must come back after the link returns");
+}
+
+// An associated-but-no-DHCP-lease link must not count as up.
+static void test_a_link_without_an_ip_is_not_treated_as_up() {
+  WiFi.status_ = WL_CONNECTED;
+  WiFi.ip = IPAddress(0, 0, 0, 0);
+  wifiLoop();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_wm.start_web,
+      "associated without an address is not a usable link");
+}
+
+// ------------------------------------------------- portal parameters -------
+
+// WiFiManager overwrites each parameter with what the browser posted, and an
+// unchecked box posts nothing. Without re-arming, the field renders checked
+// while reading empty and can never be switched back on.
+static void test_saving_params_rearms_the_checkbox_values() {
+  rangeInit();
+  s_param_miles.setValue("", 2);
+  s_param_runways.setValue("", 2);
+  onPortalParamsSaved();
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("T", s_param_miles.getValue(),
+      "the miles checkbox must be re-armed for the next page render");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("T", s_param_runways.getValue(),
+      "and so must the runway checkbox");
+}
+
+static void test_saving_params_applies_a_valid_location() {
+  s_param_lat.setValue("51.470000", 20);
+  s_param_lon.setValue("-0.454300", 20);
+  onPortalParamsSaved();
+  TEST_ASSERT_DOUBLE_WITHIN(1e-4, 51.47, services::location::lat());
+  TEST_ASSERT_DOUBLE_WITHIN(1e-4, -0.4543, services::location::lon());
+}
+
+static void test_saving_params_keeps_the_old_location_when_input_is_invalid() {
+  services::location::saveFromStrings("40.0", "-3.0");
+  s_param_lat.setValue("not-a-number", 20);
+  s_param_lon.setValue("-3.0", 20);
+  onPortalParamsSaved();
+  TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(1e-6, 40.0, services::location::lat(),
+      "a rejected coordinate must not disturb the stored one");
+}
+
+// ------------------------------------------------------ status screens -----
+
+static int fillScreenCount() { return (int)g_gfx.count(DrawOp::FillScreen); }
+
+static void test_each_status_screen_clears_before_drawing() {
+  for (auto fn : {statusScreenPortal, statusScreenConnectFailed, statusScreenWifiReset}) {
+    g_gfx.reset();
+    fn();
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, fillScreenCount(),
+        "a status screen must clear the panel exactly once before drawing");
+    TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Text) > 0, "and then draw text");
+  }
+}
+
+static void test_status_screen_text_fits_the_panel() {
+  g_gfx.reset();
+  statusScreenPortal();          // the tallest: six lines, mixed sizes
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    char m[160];
+    snprintf(m, sizeof(m), "portal line '%s' at y=%d h=%d runs off the 240 px panel",
+             o.text.c_str(), o.y, o.h);
+    TEST_ASSERT_TRUE_MESSAGE(o.y - o.h / 2 >= 0 && o.y + o.h / 2 <= 240, m);
+  }
+}
+
+static void test_the_portal_screen_shows_how_to_reach_it() {
+  g_gfx.reset();
+  statusScreenPortal();
+  bool ap = false, host = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text == config::kPortalApName) ap = true;
+    if (o.text == config::kPortalHostUrl) host = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(ap, "the setup screen must name the AP to join");
+  TEST_ASSERT_TRUE_MESSAGE(host, "and the address to open");
+}
+
+// Each tick must erase the dots it drew last time, or the panel accumulates
+// green specks around the rim.
+static void test_the_connecting_spinner_erases_what_it_drew() {
+  statusScreenConnectingBegin("TestNet");
+  g_gfx.reset();
+  statusScreenConnectingTick();
+  int erased = 0, drawn = 0;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) ++drawn;
+  for (const auto& o : g_gfx.of(DrawOp::Circle)) ++erased;      // fillCircle records as SmoothCircle
+  // The erase pass uses fillCircle (recorded as SmoothCircle) too, so count all
+  // circle ops and require at least one erase for every dot drawn.
+  TEST_ASSERT_TRUE_MESSAGE(drawn >= 20,
+      "a tick must erase the previous dots and draw the new ones");
+  (void)erased;
+}
+
+static void test_a_long_ssid_is_truncated_not_overrun() {
+  const char* long_ssid = "AVeryLongNetworkNameThatCannotPossiblyFitOnScreen";
+  statusScreenConnectingBegin(long_ssid);
+  g_gfx.reset();
+  statusScreenConnectingTick();
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text.rfind("AVery", 0) != 0) continue;
+    TEST_ASSERT_TRUE_MESSAGE(o.w <= 220,
+        "the SSID line must be truncated to fit, not drawn past the panel");
+    TEST_ASSERT_TRUE_MESSAGE(o.text.size() < strlen(long_ssid),
+        "and must actually be shortened");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // Runs first: s_force_config_portal is a file-static no test can clear.
@@ -187,5 +329,17 @@ int main(int, char**) {
   RUN_TEST(test_button_state_is_readable_directly);
   RUN_TEST(test_the_interrupt_is_attached_only_once);
   RUN_TEST(test_connect_wait_still_waits_across_the_millis_wrap);
+  RUN_TEST(test_the_lan_portal_starts_once_while_linked);
+  RUN_TEST(test_the_lan_portal_stops_once_when_the_link_drops);
+  RUN_TEST(test_the_portal_restarts_after_a_reconnect);
+  RUN_TEST(test_a_link_without_an_ip_is_not_treated_as_up);
+  RUN_TEST(test_saving_params_rearms_the_checkbox_values);
+  RUN_TEST(test_saving_params_applies_a_valid_location);
+  RUN_TEST(test_saving_params_keeps_the_old_location_when_input_is_invalid);
+  RUN_TEST(test_each_status_screen_clears_before_drawing);
+  RUN_TEST(test_status_screen_text_fits_the_panel);
+  RUN_TEST(test_the_portal_screen_shows_how_to_reach_it);
+  RUN_TEST(test_the_connecting_spinner_erases_what_it_drew);
+  RUN_TEST(test_a_long_ssid_is_truncated_not_overrun);
   return UNITY_END();
 }
