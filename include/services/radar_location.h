@@ -16,7 +16,12 @@ double lon();
  */
 void snapshot(double* out_lat, double* out_lon);
 
-/** Parse portal strings, validate, persist to NVS, update runtime values. */
+/**
+ * Parse portal strings, validate, apply to the runtime values, and persist.
+ * Returns whether the coordinates were ACCEPTED, not whether they reached NVS:
+ * a refused NVS write still leaves them live for this session and logs
+ * "applied but NOT saved". Only invalid or out-of-range input returns false.
+ */
 bool saveFromStrings(const char* lat_str, const char* lon_str);
 
 /** Clear stored coordinates (e.g. with WiFi credential reset). */

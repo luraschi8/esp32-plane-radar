@@ -71,7 +71,7 @@ Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
 ### Runways
 
-- Major airports from OurAirports (`large_airport`); open runway strips in range (helipads excluded), capped at 32 strips and 12 airport labels — 2.7× and 4× the worst case anywhere in the dataset (12 strips / 3 airports, measured over the shipped data at the widest preset)
+- Major airports from OurAirports (`large_airport`); open runway strips in range (helipads excluded), capped at 32 strips and 12 airport labels — 2.7× and 3× the worst case anywhere in the dataset (12 strips centred on KMDW, 4 airports from a centre in Moscow, measured over the shipped data at the widest preset)
 - Teal runway lines with one ICAO label per airport (e.g. `KJFK`); toggle in the Wi‑Fi setup portal
 - Update the embedded list: `python3 scripts/build_large_airports.py`
 
@@ -133,6 +133,11 @@ data/
   ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/
   build_large_airports.py
+  merge-firmware.sh        — build + merge -> release/plane-radar-merged.bin
+  merge_firmware.py        — PlatformIO `merge` target
+test/                      — host-only unit tests; never compiled by `pio run`
+partitions/
+  plane_radar.csv
 src/
   main.cpp
   data/
@@ -196,7 +201,7 @@ Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with C
 | Workflow | When | Output |
 |----------|------|--------|
 | [Build](.github/workflows/build.yml) | Push to `main`/`master`, any PR, manual dispatch | Runs the host test suite, then artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
-| [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
+| [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) or manual dispatch | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
 
 To ship a version users can download:
 

@@ -23,7 +23,9 @@ export PATH="$HOME/.platformio/penv/bin:$PATH" # optional, for the current shell
 `scripts/merge-firmware.sh` already falls back to that path automatically. Every `pio` command below
 works with either form.
 
-There is one build environment: **`supermini`** (`platformio.ini`). `-e supermini` is optional but explicit.
+There are two environments: **`supermini`** (the firmware) and **`native`** (host unit tests, section 3.0).
+`default_envs = supermini` makes a bare `pio run` build the firmware only; `-e supermini` is optional but
+explicit. The test env is always selected deliberately with `-e native`.
 
 ---
 
@@ -48,7 +50,7 @@ Useful variants:
 
 ```bash
 pio run -e supermini -t clean     # drop object files, keep downloaded packages
-pio run -e supermini -t merge     # produce firmware-merged.bin (requires a prior build)
+pio run -e supermini -t merge     # produce firmware-merged.bin (builds the app first if needed)
 rm -rf .pio                       # nuclear: also re-downloads toolchain + libs
 ```
 
@@ -105,7 +107,9 @@ Read the RAM number as *static* usage only. At runtime the radar allocates a **2
 statics climb far above the baseline, `ensureFrameSprite()` starts failing and the display falls back
 to flicker-prone direct drawing — the serial log prints `radar: frame sprite alloc failed`.
 
-Flash growth is dominated by `src/data/large_airports_data.cpp`. The app partition is 3 MB.
+`src/data/large_airports_data.cpp` is the largest project-owned contributor to flash — `kRunways`
+40,944 B + `kAirports` 18,656 B = 59.6 KB, 4.8% of the image — but the framework (lwIP, mbedTLS,
+net80211) dominates the total. The app partition is 3 MB.
 
 ### 3.3 Behaves on hardware
 
@@ -121,6 +125,7 @@ Flash (section 4), open the serial monitor, and walk the checklist:
 | Short-tap BOOT | `Range: 10km (outer ~13 km)` — cycles 5 → 10 → 15 → 20 → 25 km, ring label changes. Note a long press does **not** reset the range |
 | Hold BOOT 3 s | `BOOT held — resetting WiFi`, reset screen, reboot into the portal |
 | Reconnect (`http://<device-ip>`) | Portal reachable while the radar keeps running |
+| Save a setting with an empty sky (toggle runways, or km↔mi) | The panel repaints **immediately**. The renderer idles when there is no traffic, so a settings change has to request its own frame — this regressed once and was invisible whenever aircraft happened to be up |
 
 **Sanity-check the geometry** when you touch the projection: set your real latitude/longitude in the
 portal and confirm that a nearby airport's runways land in the right place and orientation, and that
@@ -201,7 +206,7 @@ pio run -e supermini -t erase
 | Workflow | Trigger | Output |
 |----------|---------|--------|
 | `.github/workflows/build.yml` | push to `main`/`master`, any PR, manual dispatch; runs `pio test -e native` then builds | artifact `plane-radar-supermini` (merged + split `.bin`, ~90 days) |
-| `.github/workflows/release.yml` | tag `v*` | GitHub Release with `plane-radar-<tag>.bin` + `.sha256` |
+| `.github/workflows/release.yml` | tag `v*`, or manual dispatch (falls back to `manual-<sha7>`) | GitHub Release with `plane-radar-<tag>.bin` + `.sha256` |
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
@@ -222,7 +227,7 @@ Downloads `airports.csv` and `runways.csv` from
 [OurAirports](https://github.com/davidmegginson/ourairports-data), keeps `large_airport` entries with
 open, non-helipad runways, and **overwrites** `include/data/large_airports.h` and
 `src/data/large_airports_data.cpp`. Never hand-edit those two files. Rebuild afterwards and re-check
-the flash figure — the dataset is the largest single contributor to image size.
+the flash figure — the dataset is the largest project-owned contributor to image size (59.6 KB today).
 
 ---
 

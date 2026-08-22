@@ -63,7 +63,9 @@ Layering is by directory, headers in `include/<layer>/`, sources in `src/<layer>
   `runway_overlay`, `status_screens` (portal / connecting / reset screens), `radar_range` (range presets +
   units + runway toggle, all in NVS).
 - **`data/`** — `large_airports_data.cpp` is **generated**; never hand-edit it or `include/data/large_airports.h`.
-  1166 airports / 1706 runway segments as `int32` 1e-7-degree fixed point, ~2.9k lines, dominating flash use.
+  1166 airports / 1706 runway segments as `int32` 1e-7-degree fixed point, ~2.9k lines. It is the largest
+  project-owned source file but **not** the bulk of the image: `kRunways` 40,944 B + `kAirports` 18,656 B
+  = 59.6 KB, 4.8% of the 1.19 MB binary (from `firmware.map`). lwIP, mbedTLS and net80211 each cost more.
 
 `main.cpp` owns the state machine: boot → optional setup screen → `wifiSetupConnect()` → radar; the loop polls
 the BOOT button, services `wifiLoop()` (keeps the LAN portal alive), reconnects with a grace period on Wi-Fi
@@ -116,7 +118,7 @@ All lat/lon → pixel math lives in **one** place: `offsetKmFromCenter`, `pxPerK
 
 Equirectangular projection about the configured centre, north = screen up: `dy_km = Δlat × 111`,
 `dx_km = Δlon × 111 × cos(centre lat)`. The `cos` factor is **required** — without it everything east–west is
-stretched by `1/cos(lat)` (≈1.64× at 52°N). It is cached and recomputed only when the centre moves: the C3 has no hardware
+stretched by `1/cos(lat)` (≈1.62× at 52°N, 1.64× at the default centre 52.3676). It is cached and recomputed only when the centre moves: the C3 has no hardware
 FPU, and the runway cache rebuild calls it once per airport across the whole dataset.
 
 Range presets label **ring 3 = ¾ of the outer radius**, so `outer_km = ring3_km × 4/3` (`radar_range.h`).
