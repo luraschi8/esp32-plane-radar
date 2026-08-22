@@ -68,9 +68,14 @@ pio test -e native -f test_geo     # one suite
 
 These build for the **host**, not the device: `test/` is never compiled by `pio run`, so nothing here reaches
 the firmware image (verified by putting a `#error` in `test/` and watching `pio run -e supermini` still
-succeed). The shipped `.cpp` files are included directly and compiled against small mocks in `test/mocks/`
-(Arduino, Preferences/NVS, WiFi, HTTPClient, a scriptable TLS client, FreeRTOS), so the tests exercise real
-code rather than a reimplementation of it.
+succeed). The shipped `.cpp` files are included directly and compiled against mocks in `test/mocks/`
+(Arduino/GPIO, Preferences/NVS, WiFi, HTTPClient, a scriptable TLS client, FreeRTOS, WiFiManager, ESPmDNS,
+esp_wifi, a `display_font` stub, and a **recording-canvas LovyanGFX** that logs every draw call), so the tests
+exercise real code rather than a reimplementation of it.
+
+Note `[env:native]` puts `-I test/mocks` *ahead of* `-I include`, so a header under `test/mocks/` mirroring an
+`include/` path silently replaces the real one in host builds. Today only `hardware/display_font.h` does this.
+If you add another, check its signatures still match the header it shadows.
 
 Fixtures in `test/fixtures_*.h` are **real adsb.fi responses** captured from the device's own location; the
 geometry suite checks our projection against the API's own `dst`/`dir` fields, which are independent ground
@@ -92,7 +97,7 @@ The size report at the end of every build is the memory budget. Current baseline
 
 ```
 RAM:   [==        ]  16.8% (used 55012 bytes from 327680 bytes)
-Flash: [====      ]  39.6% (used 1247186 bytes from 3145728 bytes)
+Flash: [====      ]  39.7% (used 1247512 bytes from 3145728 bytes)
 ```
 
 Read the RAM number as *static* usage only. At runtime the radar allocates a **240x240x16bpp sprite

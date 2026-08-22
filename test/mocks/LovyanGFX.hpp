@@ -95,11 +95,30 @@ class LGFXBase {
   const IFont* getFont() const { return nullptr; }
   bool loadFont(const uint8_t*, IFont::font_type_t) { return true; }
 
-  /** Proportional and deterministic, so layout assertions are meaningful. */
-  int textWidth(const char* s) const {
-    return s ? (int)(strlen(s) * g_gfx.char_width * text_size_) : 0;
+  /**
+   * Proportional, so a layout that only works for monospace text fails here as
+   * it would on the panel. Crude, but not a lie about glyph widths.
+   */
+  static int glyphWidth(char c) {
+    if (c == 'M' || c == 'W' || c == 'm' || c == 'w') return 11;
+    if (c == 'I' || c == 'i' || c == 'l' || c == '1' || c == '.' || c == ' ') return 4;
+    return 7;
   }
-  int fontHeight() const { return (int)(g_gfx.line_height * text_size_); }
+  int textWidth(const char* s) const {
+    if (!s) return 0;
+    int w = 0;
+    for (const char* p = s; *p; ++p) w += glyphWidth(*p);
+    return (int)(w * text_size_);
+  }
+  /**
+   * Honours the SELECTED font. Returning a constant made pickGfxFontClosest()
+   * measure every candidate identically, so it always chose candidates[0] --
+   * the font-selection logic ran but was never actually tested.
+   */
+  int fontHeight() const {
+    const int base = font_ ? font_->height : g_gfx.line_height;
+    return (int)(base * text_size_);
+  }
 
   static uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));

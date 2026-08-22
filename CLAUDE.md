@@ -23,13 +23,22 @@ pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.b
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-**Run `pio test -e native` before and after any change** — a host-side suite covering geometry, settings and
-persistence, the render state machine, and the whole ADS-B fetch/parse pipeline against real captured API
-payloads. `test/` is never compiled by `pio run`, so tests cost nothing in flash. Mocks live in `test/mocks/`;
-suites include the shipped `.cpp` directly so file-local logic is reachable. There is no linter or formatter. Verification = a clean build with no `src/`-or-
+**Run `pio test -e native` before and after any change** — 105 host-side tests across six suites, ~3 s:
+`test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),
+`test_render_policy` (the render state machine), `test_adsb` (the whole fetch/parse pipeline against real
+captured payloads), `test_display` (rendering and runway overlay via a recording-canvas LovyanGFX mock), and
+`test_wifi` (BOOT button, credential reset, force-portal flag).
+
+`test/` is never compiled by `pio run`, so tests cost nothing in flash. Suites include the shipped `.cpp`
+directly so file-local logic is reachable, which means **file-statics persist between tests** — give each test
+an explicit starting state rather than relying on order. There is no linter or formatter.
+
+Two things the host suite cannot see, so do not assume them covered: it runs the **bitmap-font fallback**
+(`g_font_is_smooth = false`) while the device ships the VLW smooth font as its primary path, and the mock
+canvas records draw calls without rasterising them — geometry is checked, appearance is not. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.6% (1247186 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.7% (1247512 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration

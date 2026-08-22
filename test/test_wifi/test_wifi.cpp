@@ -25,7 +25,9 @@ void setUp() {
   // firmware attaches only once.
   g_gpio.release();
   bootButtonPollLongPress();
-  while (bootButtonConsumeTap()) {}
+  // Bounded: an unbounded drain spins forever if the latch is ever left set,
+  // turning a clean assertion failure into a hung test run.
+  for (int i = 0; i < 8 && bootButtonConsumeTap(); ++i) {}
 }
 void tearDown() {}
 
