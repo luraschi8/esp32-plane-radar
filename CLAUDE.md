@@ -23,7 +23,7 @@ pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.b
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-**Run `pio test -e native` before and after any change** — 149 host-side tests across eight suites, ~6 s:
+**Run `pio test -e native` before and after any change** — 165 host-side tests across eight suites, ~5 s:
 `test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),
 `test_render_policy` (the render state machine), `test_adsb` (the whole fetch/parse pipeline against real
 captured payloads), `test_display` (rendering and runway overlay via a recording-canvas LovyanGFX mock), `test_wifi` (BOOT button, credential reset, force-portal flag, LAN portal lifecycle, status screens),
@@ -40,7 +40,7 @@ untestable on the host: real lock contention, task preemption, heap fragmentatio
 loading, WiFiManager's real HTML, contact bounce, and 80 MHz SPI integrity. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.7% (1247622 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.7% (1247600 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration

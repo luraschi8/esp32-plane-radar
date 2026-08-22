@@ -12,14 +12,23 @@ class WiFiManagerParameter {
   std::string id_, value_;
 };
 /** Records what the portal was asked to do; returns benign defaults. */
-struct MockWmStats { int reset = 0, erase = 0, start_portal = 0, start_web = 0, stop_web = 0, process = 0; };
+struct MockWmStats {
+  int reset = 0, erase = 0, start_portal = 0, start_web = 0, stop_web = 0, process = 0;
+  /** Scripted: how many process() calls report the portal still active. */
+  int portal_active_ticks = 0;
+  /** Scripted: process() returns true (credentials saved) after this many calls. */
+  int process_true_after = -1;
+};
 extern MockWmStats g_wm;
 class WiFiManager {
  public:
   void setConfigPortalTimeout(unsigned long) {}
   void setAPStaticIPConfig(IPAddress, IPAddress, IPAddress) {}
   void setHostname(const char*) {}
-  void setAPCallback(void (*)(WiFiManager*)) {}
+  // Keeping the callback lets tests fire it, which is the only way to reach
+  // onConfigPortalApStarted() -- and therefore the AP-side TX-power cap.
+  void setAPCallback(void (*cb)(WiFiManager*)) { ap_cb_ = cb; }
+  void fireApCallback() { if (ap_cb_) ap_cb_(this); }
   void setSaveParamsCallback(void (*)()) {}
   void addParameter(WiFiManagerParameter*) {}
   void setConfigPortalBlocking(bool) {}
@@ -29,9 +38,14 @@ class WiFiManager {
   void startWebPortal() { ++g_wm.start_web; web_ = true; }
   void stopWebPortal() { ++g_wm.stop_web; web_ = false; }
   bool getWebPortalActive() const { return web_; }
-  bool getConfigPortalActive() const { return false; }
-  bool process() { ++g_wm.process; return false; }
+  bool getConfigPortalActive() const { return g_wm.portal_active_ticks > 0; }
+  bool process() {
+    ++g_wm.process;
+    if (g_wm.portal_active_ticks > 0) --g_wm.portal_active_ticks;
+    return g_wm.process_true_after >= 0 && g_wm.process >= g_wm.process_true_after;
+  }
   String getWiFiSSID() { return WiFi.ssid; }
   String getWiFiPass() { return String("pw"); }
   bool web_ = false;
+  void (*ap_cb_)(WiFiManager*) = nullptr;
 };

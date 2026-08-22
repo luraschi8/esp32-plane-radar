@@ -47,10 +47,74 @@ static void test_setup_starts_the_fetch_task() {
   g_espwifi.has_creds = true;
   WiFi.status_ = WL_CONNECTED;
   setup();
-  bool was = true;
-  g_tls = MockTlsStats();
-  services::adsb::fetchTick(false, &was);   // only reachable if the task machinery came up
-  TEST_ASSERT_TRUE_MESSAGE(true, "setup completed without hanging");
+  // The task machinery is only up if the mutex exists: aircraftLock() returns
+  // true unconditionally when it does not, so a real take can be made to fail.
+  g_mutex_take_fails = 1;
+  TEST_ASSERT_FALSE_MESSAGE(services::adsb::aircraftLock(20),
+      "setup() must have created the fetch task's mutex");
+  g_mutex_take_fails = 0;
+  services::adsb::aircraftUnlock();
+}
+
+// Task creation can fail under heap pressure right after the 115 KB sprite.
+// loop() retries every kFetchTaskRetryMs; without that the device never fetches.
+static void test_loop_retries_a_failed_fetch_task() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  g_task_create_fail = 1;              // the attempt inside setup() fails
+  setup();
+  g_mutex_take_fails = 1;
+  const bool no_task_yet = !services::adsb::aircraftLock(20);
+  g_mutex_take_fails = 0;
+  if (!no_task_yet) services::adsb::aircraftUnlock();
+  // Drive past the retry interval; loop() must try again while connected.
+  for (unsigned i = 0; i < config::kFetchTaskRetryMs / 10 + 20; ++i) loop();
+  g_mutex_take_fails = 1;
+  const bool have_task = !services::adsb::aircraftLock(20);
+  g_mutex_take_fails = 0;
+  if (!have_task) services::adsb::aircraftUnlock();
+  TEST_ASSERT_TRUE_MESSAGE(have_task,
+      "loop() must retry startFetchTask() -- otherwise a single failure at boot "
+      "means the radar never updates again");
+}
+
+// Losing and regaining WiFi is the most common runtime event after boot.
+static void test_the_radar_comes_back_after_a_wifi_drop() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  g_http.reset();
+  g_http.body = "{\"ac\":[{\"hex\":\"aa\",\"lat\":40.5,\"lon\":-3.6,\"gs\":200,\"track\":90}]}";
+  g_http.code = HTTP_CODE_OK;
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0, "precondition: radar is up");
+
+  WiFi.status_ = WL_DISCONNECTED;               // the link drops
+  for (int i = 0; i < 50; ++i) loop();
+  g_gfx.reset();
+  WiFi.status_ = WL_CONNECTED;                  // ...and comes back
+  for (unsigned i = 0; i < config::kWifiReconnectIntervalMs / 10 + 50; ++i) loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0,
+      "the radar must repaint once the link returns, not stay on the status screen");
+}
+
+static void test_a_brief_drop_does_not_blank_the_radar_permanently() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  g_http.reset();
+  g_http.body = "{\"ac\":[{\"hex\":\"aa\",\"lat\":40.5,\"lon\":-3.6,\"gs\":200,\"track\":90}]}";
+  g_http.code = HTTP_CODE_OK;
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  loop();
+  WiFi.status_ = WL_DISCONNECTED;
+  for (int i = 0; i < 10; ++i) loop();          // ~100 ms, well inside the grace
+  WiFi.status_ = WL_CONNECTED;
+  g_gfx.reset();
+  for (int i = 0; i < 30; ++i) loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0,
+      "a momentary drop must not require a full reconnect cycle to recover");
 }
 
 // A frame costs ~44 ms; loop() must rate-limit rendering or it starves the
@@ -121,6 +185,9 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_setup_reserves_the_frame_buffer_before_starting_wifi);
   RUN_TEST(test_setup_starts_the_fetch_task);
+  RUN_TEST(test_loop_retries_a_failed_fetch_task);
+  RUN_TEST(test_the_radar_comes_back_after_a_wifi_drop);
+  RUN_TEST(test_a_brief_drop_does_not_blank_the_radar_permanently);
   RUN_TEST(test_loop_renders_no_faster_than_the_render_interval);
   RUN_TEST(test_loop_does_not_render_while_disconnected);
   RUN_TEST(test_loop_waits_the_grace_period_before_reconnecting);

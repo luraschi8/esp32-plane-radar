@@ -342,9 +342,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     stopSession();
     return false;
   }
-  JsonVariantConst ac_field = doc["ac"];
-  if (!ac_field.isNull() && !ac_field.is<JsonArrayConst>()) {
-    Serial.println("adsb: 'ac' is not an array");
+  // Insist on an actual array. The filter strips a malformed 'ac' value, so a
+  // response carrying `"ac": 5` (or omitting it entirely) is indistinguishable
+  // from one carrying `"ac": []` by the time we look -- and treating it as an
+  // empty sky wipes real traffic off the panel. An empty sky is `[]`; anything
+  // else is not this API and the last good list is kept until it expires.
+  if (!doc["ac"].is<JsonArrayConst>()) {
+    Serial.println("adsb: 'ac' is missing or not an array");
     stopSession();
     return false;
   }
@@ -353,10 +357,6 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   Aircraft* out = s_buffers[back];
 
   JsonArray ac = doc["ac"].as<JsonArray>();
-  if (ac.isNull()) {
-    publish(back, 0);   // a genuine empty sky
-    return true;
-  }
 
   size_t n = 0;
   for (JsonObject plane : ac) {

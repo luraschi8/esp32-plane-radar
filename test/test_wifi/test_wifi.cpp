@@ -313,6 +313,111 @@ static void test_a_long_ssid_is_truncated_not_overrun() {
   }
 }
 
+// ------------------------------------- status screens, smooth font ---------
+// On the device these screens ARE the VLW path; everything above runs the
+// bitmap fallback, so their line-height summation and vertical centring were
+// only ever validated against fallback metrics.
+
+static void test_status_screens_fit_the_panel_with_the_smooth_font() {
+  g_font_is_smooth = true;
+  for (auto fn : {statusScreenPortal, statusScreenConnectFailed, statusScreenWifiReset}) {
+    g_gfx.reset();
+    fn();
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)g_gfx.count(DrawOp::FillScreen),
+                                  "must still clear once");
+    for (const auto& o : g_gfx.of(DrawOp::Text)) {
+      char m[176];
+      snprintf(m, sizeof(m), "smooth-font line '%s' at y=%d h=%d runs off the panel",
+               o.text.c_str(), o.y, o.h);
+      TEST_ASSERT_TRUE_MESSAGE(o.y - o.h / 2 >= 0 && o.y + o.h / 2 <= 240, m);
+    }
+  }
+  g_font_is_smooth = false;
+}
+
+static void test_the_connecting_screen_works_with_the_smooth_font() {
+  g_font_is_smooth = true;
+  statusScreenConnectingBegin("SomeNetwork");
+  g_gfx.reset();
+  statusScreenConnectingTick();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::SmoothCircle) >= 20,
+      "the spinner must erase and redraw under the smooth font too");
+  g_font_is_smooth = false;
+}
+
+// ------------------------------------------ force-portal across a reboot ---
+
+// The in-RAM flag short-circuits the NVS read, so clearing it is the only way
+// to exercise what actually happens on the next boot.
+static void test_the_force_portal_flag_is_read_back_from_nvs_after_a_reboot() {
+  mockBootButton(true);
+  bootButtonPollLongPress();
+  mockAdvanceMs(config::kBootResetHoldMs + 100);
+  bootButtonPollLongPress();                    // sets the flag in RAM and NVS
+  g_gpio.release(); bootButtonPollLongPress();
+
+  s_force_config_portal = false;                // simulate the reboot
+  TEST_ASSERT_TRUE_MESSAGE(wifiShowsSetupScreenOnBoot(),
+      "after a reset the flag must survive in NVS, or the device boots into a "
+      "connect loop on credentials it just erased");
+}
+
+static void test_consuming_the_flag_clears_it_for_the_boot_after() {
+  mockBootButton(true);
+  bootButtonPollLongPress();
+  mockAdvanceMs(config::kBootResetHoldMs + 100);
+  bootButtonPollLongPress();
+  g_gpio.release(); bootButtonPollLongPress();
+
+  s_force_config_portal = false;                // reboot
+  TEST_ASSERT_TRUE(consumeForceConfigPortal());
+  s_force_config_portal = false;                // reboot again
+  TEST_ASSERT_FALSE_MESSAGE(wifiShowsSetupScreenOnBoot(),
+      "consuming the flag must clear NVS too, or the device is trapped in the "
+      "setup portal forever");
+}
+
+static void test_a_clean_boot_does_not_force_the_portal() {
+  s_force_config_portal = false;
+  TEST_ASSERT_FALSE(wifiShowsSetupScreenOnBoot());
+  TEST_ASSERT_FALSE(consumeForceConfigPortal());
+}
+
+// ----------------------------------------------------- AP-side TX power ----
+
+// The SuperMini browns out at full TX power (upstream fix 2e2808e). The cap is
+// applied in two places; the AP-side one is only reached via WiFiManager's
+// callback, so it had no regression test at all.
+static void test_the_ap_callback_caps_tx_power_and_shows_the_setup_screen() {
+  ensureWifiManager();                          // registers the callback
+  WiFi.reset();
+  g_gfx.reset();
+  s_wm.fireApCallback();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, WiFi.txpower_calls,
+      "TX power must be capped when the setup AP starts, or the board browns out");
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::FillScreen) >= 1,
+      "and the setup instructions must appear on the panel");
+}
+
+static void test_station_connect_also_caps_tx_power() {
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;
+  g_espwifi.has_creds = true;
+  tryConnectWithUi(String("net"), String("pw"), false);
+  TEST_ASSERT_TRUE_MESSAGE(WiFi.txpower_calls >= 1,
+      "the STA path must cap TX power on every attempt");
+}
+
+static void test_connect_retries_are_bounded() {
+  WiFi.reset();
+  WiFi.status_ = WL_DISCONNECTED;
+  tryConnectWithUi(String("net"), String("pw"), false);
+  char m[112];
+  snprintf(m, sizeof(m), "%d WiFi.begin() calls for %u configured attempts",
+           WiFi.begin_calls, (unsigned)config::kWifiConnectAttempts);
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)config::kWifiConnectAttempts, WiFi.begin_calls, m);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // Runs first: s_force_config_portal is a file-static no test can clear.
@@ -341,5 +446,13 @@ int main(int, char**) {
   RUN_TEST(test_the_portal_screen_shows_how_to_reach_it);
   RUN_TEST(test_the_connecting_spinner_erases_what_it_drew);
   RUN_TEST(test_a_long_ssid_is_truncated_not_overrun);
+  RUN_TEST(test_status_screens_fit_the_panel_with_the_smooth_font);
+  RUN_TEST(test_the_connecting_screen_works_with_the_smooth_font);
+  RUN_TEST(test_the_force_portal_flag_is_read_back_from_nvs_after_a_reboot);
+  RUN_TEST(test_consuming_the_flag_clears_it_for_the_boot_after);
+  RUN_TEST(test_a_clean_boot_does_not_force_the_portal);
+  RUN_TEST(test_the_ap_callback_caps_tx_power_and_shows_the_setup_screen);
+  RUN_TEST(test_station_connect_also_caps_tx_power);
+  RUN_TEST(test_connect_retries_are_bounded);
   return UNITY_END();
 }

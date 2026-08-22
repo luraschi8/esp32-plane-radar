@@ -263,10 +263,17 @@ static void test_a_genuine_empty_response_still_clears() {
   TEST_ASSERT_EQUAL_INT(0, (int)aircraftCount());
 }
 
-static void test_missing_ac_key_is_survivable() {
-  TEST_ASSERT_TRUE_MESSAGE(fetch("{\"msg\":\"No error\"}"),
-      "a response without an ac array must publish an empty sky, not fail");
-  TEST_ASSERT_EQUAL_INT(0, (int)aircraftCount());
+// A response with no 'ac' array is not this API. Treating it as an empty sky
+// would clear real traffic AND refresh the update timestamp, so the 60 s expiry
+// would never fire either.
+static void test_a_missing_ac_key_is_rejected_not_read_as_empty() {
+  fetch(kAirbornePayload());
+  const size_t good = aircraftCount();
+  TEST_ASSERT_TRUE(good > 0);
+  TEST_ASSERT_FALSE_MESSAGE(fetch("{\"msg\":\"No error\"}"),
+      "no 'ac' array means the response was not the aircraft feed");
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)good, (int)aircraftCount(),
+      "and the last good list must survive");
 }
 
 static void test_empty_ac_array_publishes_zero_not_stale_traffic() {
@@ -418,6 +425,32 @@ static void test_unwanted_fields_are_not_retained() {
       "the wanted fields must still be extracted alongside a huge unwanted one");
 }
 
+// A non-retryable error must return at once rather than burn all three attempts
+// against an API documented at 1 req/s.
+static void test_a_non_retryable_error_does_not_consume_the_retry_budget() {
+  g_http.reset();
+  g_http.body = kAirbornePayload();
+  g_http.code = 500;                       // a real response, just not OK
+  TEST_ASSERT_FALSE(fetchUpdate(40.4, -3.6, 30.0f));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_http.get_calls,
+      "a server error is not a connection failure -- retrying it is pure load");
+}
+
+// The shape guard has two arms; only the first was exercised.
+static void test_an_ac_field_that_is_not_an_array_is_rejected() {
+  fetch(kAirbornePayload());
+  const size_t good = aircraftCount();
+  TEST_ASSERT_TRUE(good > 0);
+  for (const char* body : {"{\"ac\":5}", "{\"ac\":\"oops\"}", "{\"ac\":{\"a\":1}}"}) {
+    char m[128];
+    snprintf(m, sizeof(m), "body %s must not be read as an empty sky", body);
+    TEST_ASSERT_FALSE_MESSAGE(fetch(body), m);
+    snprintf(m, sizeof(m), "body %s must leave the last good list intact", body);
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)good, (int)aircraftCount(), m);
+    fetch(kAirbornePayload());             // restore for the next case
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These three must run before anything creates the task or the mutex:
@@ -450,7 +483,7 @@ int main(int, char**) {
   RUN_TEST(test_non_api_bodies_are_not_mistaken_for_an_empty_sky);
   RUN_TEST(test_a_genuine_empty_response_still_clears);
   RUN_TEST(test_empty_ac_array_publishes_zero_not_stale_traffic);
-  RUN_TEST(test_missing_ac_key_is_survivable);
+  RUN_TEST(test_a_missing_ac_key_is_rejected_not_read_as_empty);
   RUN_TEST(test_retries_are_capped);
   RUN_TEST(test_a_failed_connect_never_closes_fd0);
   RUN_TEST(test_error_after_a_real_connection_stops_once_only);
@@ -461,5 +494,7 @@ int main(int, char**) {
   RUN_TEST(test_no_teardown_when_the_link_was_never_up);
   RUN_TEST(test_a_tick_while_connected_fetches);
   RUN_TEST(test_unwanted_fields_are_not_retained);
+  RUN_TEST(test_a_non_retryable_error_does_not_consume_the_retry_budget);
+  RUN_TEST(test_an_ac_field_that_is_not_an_array_is_rejected);
   return UNITY_END();
 }

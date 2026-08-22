@@ -711,6 +711,16 @@ static void test_no_text_or_rect_is_drawn_outside_the_panel() {
     TEST_ASSERT_TRUE_MESSAGE(r.x >= 0 && r.x + r.w <= kSize && r.y >= 0 &&
                              r.y + r.h <= kSize, m);
   }
+  // Filled rectangles too -- label backings are positioned from text metrics
+  // and can run off the edge independently of the glyphs.
+  for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+    if (o.w > 200 || o.h > 200) continue;        // the full-span crosshairs
+    char m[160];
+    snprintf(m, sizeof(m), "fillRect x[%d,%d] y[%d,%d] is outside the 240x240 panel",
+             o.x, o.x + o.w, o.y, o.y + o.h);
+    TEST_ASSERT_TRUE_MESSAGE(o.x >= -2 && o.x + o.w <= kSize + 2 && o.y >= -2 &&
+                             o.y + o.h <= kSize + 2, m);
+  }
   // The cardinals are exempt from the bounds check, but must still be close to
   // the edge rather than arbitrarily off-panel.
   for (const auto& o : g_gfx.of(DrawOp::Text)) {
@@ -756,6 +766,52 @@ static void test_speed_vector_length_boundaries() {
       "faster targets must draw longer vectors");
 }
 
+// The centre dot and the palette could both be deleted with the suite green.
+
+static void test_the_centre_dot_is_drawn() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool found = false;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle))
+    if (o.r == kCenterDotRadius && o.x == kCenterX && o.y == kCenterY) found = true;
+  TEST_ASSERT_TRUE_MESSAGE(found, "the white dot marking your own position must be drawn");
+}
+
+// GC9A01 modules are wired BGR, so initPalette() swaps R and B for the aircraft
+// colour: "logical red renders red on screen". Comparing drawn ops against the
+// same mutable global initPalette writes would prove nothing, so this pins the
+// literal encoding.
+static void test_the_aircraft_colour_is_bgr_swapped_for_this_panel() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  const uint16_t expected = config::kDisplayRgbOrder
+      ? lgfx::LGFXBase::color565(kAircraftB, kAircraftG, kAircraftR)
+      : lgfx::LGFXBase::color565(kAircraftR, kAircraftG, kAircraftB);
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, kColorAircraft,
+      "dropping the R/B swap makes every aircraft render blue on the panel");
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(expected, g_gfx.of(DrawOp::Triangle)[0].color,
+      "and the symbol must actually be drawn in it");
+}
+
+// Rim dots are painted far-first so nearer contacts sit on top.
+static void test_rim_dots_are_painted_far_first() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{20.0f, 20.0f, 300, 45, 0.1f, "NEARER"},
+                {80.0f, 80.0f, 300, 45, 0.1f, "FARTHER"}};
+  publishTargets(t, 2);
+  radarDisplayDraw();
+  std::vector<DrawOp> dots;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle))
+    if (o.r == kBeyondRingDotRadiusPx) dots.push_back(o);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, (int)dots.size(), "both distant targets get a rim dot");
+  const int d0 = radar::distSqFromCenter(dots[0].x, dots[0].y);
+  const int d1 = radar::distSqFromCenter(dots[1].x, dots[1].y);
+  TEST_ASSERT_TRUE_MESSAGE(d0 >= d1,
+      "the farther contact must be painted first so the nearer one wins overlaps");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These two must run first: the frame sprite is created once and cached in a
@@ -790,6 +846,9 @@ int main(int, char**) {
   RUN_TEST(test_no_text_or_rect_is_drawn_outside_the_panel);
   RUN_TEST(test_segment_disc_intersection_handles_the_chord_case);
   RUN_TEST(test_speed_vector_length_boundaries);
+  RUN_TEST(test_the_centre_dot_is_drawn);
+  RUN_TEST(test_the_aircraft_colour_is_bgr_swapped_for_this_panel);
+  RUN_TEST(test_rim_dots_are_painted_far_first);
   RUN_TEST(test_runways_are_drawn_at_a_real_airport);
   RUN_TEST(test_no_runways_when_the_overlay_is_switched_off);
   RUN_TEST(test_no_runways_in_the_middle_of_the_ocean);
