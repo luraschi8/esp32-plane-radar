@@ -313,9 +313,18 @@ static void test_the_connecting_spinner_erases_what_it_drew() {
 
 static void test_a_long_ssid_is_truncated_not_overrun() {
   const char* long_ssid = "AVeryLongNetworkNameThatCannotPossiblyFitOnScreen";
-  statusScreenConnectingBegin(long_ssid);
+  // Begin() draws the text and latches s_connecting_text_drawn, so a following
+  // Tick() redraws nothing: this used to reset the log AFTER Begin() and then
+  // loop over zero text ops, asserting nothing at all.
   g_gfx.reset();
+  statusScreenConnectingBegin(long_ssid);
   statusScreenConnectingTick();
+  bool saw_ssid_line = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text.rfind("AVery", 0) == 0) saw_ssid_line = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(saw_ssid_line,
+      "precondition: the SSID line must actually be drawn, or this is vacuous");
   for (const auto& o : g_gfx.of(DrawOp::Text)) {
     if (o.text.rfind("AVery", 0) != 0) continue;
     TEST_ASSERT_TRUE_MESSAGE(o.w <= 220,

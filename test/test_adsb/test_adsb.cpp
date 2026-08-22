@@ -504,6 +504,31 @@ static void test_an_ac_field_that_is_not_an_array_is_rejected() {
   }
 }
 
+// publish() is the WRITER side of the aircraft mutex. The draw-path balance
+// test cannot see it: those tests zero the counter after publishing. A publish
+// that takes the lock and never gives it back deadlocks the fetch task on its
+// very next cycle -- the radar freezes on the last frame, permanently.
+static void test_publishing_a_fetch_gives_the_lock_back() {
+  startFetchTask();                       // a real mutex must exist
+  g_mutex_outstanding = 0;
+  fetch(kAirbornePayload());
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "publishing a fetch leaked the aircraft lock -- the fetch task would "
+      "block forever on its next publish and the radar would freeze");
+
+  g_mutex_outstanding = 0;
+  fetch("{\"ac\":[]}");                    // the empty-sky publish path
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "the empty-sky publish leaked the aircraft lock");
+
+  // ...and the reader accessors used by the render path.
+  g_mutex_outstanding = 0;
+  (void)aircraftCount(); (void)hasTraffic(); (void)dataExpired();
+  if (aircraftLock(20)) aircraftUnlock();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_mutex_outstanding,
+      "a reader accessor leaked the aircraft lock");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These three must run before anything creates the task or the mutex:
@@ -550,6 +575,7 @@ int main(int, char**) {
   RUN_TEST(test_a_non_retryable_error_does_not_consume_the_retry_budget);
   RUN_TEST(test_a_transport_error_outside_the_retryable_set_returns_at_once);
   RUN_TEST(test_a_refused_connection_uses_the_retry_budget);
+  RUN_TEST(test_publishing_a_fetch_gives_the_lock_back);
   RUN_TEST(test_a_null_response_stream_is_handled);
   RUN_TEST(test_an_ac_field_that_is_not_an_array_is_rejected);
   return UNITY_END();

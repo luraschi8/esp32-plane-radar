@@ -163,8 +163,38 @@ static void test_clip_collapses_when_no_point_on_segment_qualifies() {
   TEST_ASSERT_EQUAL_INT(4000, y1);
 }
 
+// distSqFromCenter is the oracle several clipping tests measure against, so a
+// bug in it makes those tests agree with the broken code. Pin it here against
+// arithmetic that does not call it.
+static void test_dist_sq_from_center_is_the_real_squared_distance() {
+  struct Case { int x, y; };
+  const int kCenterX = ui::radar::kCenterX, kCenterY = ui::radar::kCenterY;
+  const Case cases[] = {{kCenterX, kCenterY}, {kCenterX + 30, kCenterY},
+                        {kCenterX, kCenterY + 30}, {kCenterX - 17, kCenterY + 44},
+                        {0, 0}, {239, 239}};
+  for (const auto& c : cases) {
+    const int dx = c.x - kCenterX, dy = c.y - kCenterY;
+    const int expect = dx * dx + dy * dy;
+    char m[160];
+    snprintf(m, sizeof(m), "distSqFromCenter(%d,%d) with centre (%d,%d)",
+             c.x, c.y, kCenterX, kCenterY);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(expect, ui::radar::distSqFromCenter(c.x, c.y), m);
+  }
+  // Both axes must contribute: dropping either term leaves the on-axis cases
+  // correct, which is exactly how a dropped dy went unnoticed.
+  TEST_ASSERT_TRUE_MESSAGE(
+      ui::radar::distSqFromCenter(kCenterX + 3, kCenterY + 40) >
+      ui::radar::distSqFromCenter(kCenterX + 3, kCenterY + 4),
+      "the y term must contribute to the distance");
+  TEST_ASSERT_TRUE_MESSAGE(
+      ui::radar::distSqFromCenter(kCenterX + 40, kCenterY + 3) >
+      ui::radar::distSqFromCenter(kCenterX + 4, kCenterY + 3),
+      "the x term must contribute to the distance");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_dist_sq_from_center_is_the_real_squared_distance);
   RUN_TEST(test_longitude_scaled_by_cos_latitude);
   RUN_TEST(test_matches_api_ground_truth);
   RUN_TEST(test_fixtures_reject_a_wrong_longitude_scale);

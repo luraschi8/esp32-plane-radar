@@ -23,13 +23,16 @@ pio run -t merge -e supermini        # -> .pio/build/supermini/firmware-merged.b
 python3 scripts/build_large_airports.py   # regenerate the embedded runway dataset from OurAirports
 ```
 
-**Run `pio test -e native` before and after any change** — 190 host-side tests across eight suites, ~8 s:
+**Run `pio test -e native` before and after any change** — 200 host-side tests across eight suites, ~17 s under ASan/UBSan:
 `test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),
 `test_render_policy` (the render state machine), `test_adsb` (the whole fetch/parse pipeline against real
 captured payloads), `test_display` (rendering and runway overlay via a recording-canvas LovyanGFX mock), `test_wifi` (BOOT button, credential reset, force-portal flag, LAN portal lifecycle, status screens),
 `test_runway_cap` (forces the strip cap to reach the truncation path), and `test_main` (setup ordering and
 loop scheduling).
 
+The host env builds with `-fsanitize=address,undefined`, so a static-buffer overrun aborts naming the line
+instead of being undefined behaviour that may or may not surface as a failure; the suite is clean under both.
+Those flags are `[env:native]` only. `default_envs = supermini` keeps a bare `pio run` building the firmware.
 `test/` is never compiled by `pio run`, so tests cost nothing in flash. Suites include the shipped `.cpp`
 directly so file-local logic is reachable, which means **file-statics persist between tests** — give each test
 an explicit starting state rather than relying on order. There is no linter or formatter.
@@ -40,7 +43,7 @@ untestable on the host: real lock contention, task preemption, heap fragmentatio
 loading, WiFiManager's real HTML, contact bounce, and 80 MHz SPI integrity. Verification = a clean build with no `src/`-or-
 `include/` warnings + flash/RAM fit in the size report + the on-hardware checklist. **`OPS.md` is the full
 build / verify / flash / troubleshooting reference — read it before doing any of those.** Current baseline:
-RAM 16.8% (55012 B static), Flash 39.7% (1247838 B of 3 MB).
+RAM 16.8% (55012 B static), Flash 39.7% (1247850 B of 3 MB).
 
 Do not reintroduce a `namespace fonts = lgfx::v1::fonts;` alias in any file: LovyanGFX >= 1.2.x already declares
 a global `namespace fonts` plus `using namespace fonts;` in `lgfx_fonts.hpp`, so the alias is a redeclaration

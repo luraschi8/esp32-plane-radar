@@ -61,8 +61,16 @@ static void test_setup_starts_the_fetch_task() {
 static void test_loop_retries_a_failed_fetch_task() {
   g_espwifi.has_creds = true;
   WiFi.status_ = WL_CONNECTED;
+  // s_task is a file-static: if an earlier test left a task behind,
+  // startFetchTask() early-returns, g_task_create_fail is never consumed, and
+  // this test passes before it starts. Clear it and assert that it did.
+  services::adsb::s_task = nullptr;
   g_task_create_fail = 1;              // the attempt inside setup() fails
   setup();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_task_create_fail,
+      "precondition: the injected failure must have been consumed by setup()");
+  TEST_ASSERT_TRUE_MESSAGE(services::adsb::s_task == nullptr,
+      "precondition: there must be no fetch task to start from");
   g_mutex_take_fails = 1;
   const bool no_task_yet = !services::adsb::aircraftLock(20);
   g_mutex_take_fails = 0;
@@ -233,6 +241,50 @@ static void test_a_reconnect_runs_a_full_attempt_cycle() {
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, attempts % (int)config::kWifiConnectAttempts, m);
 }
 
+// loop() must service WiFiManager every iteration: the same instance serves the
+// LAN portal, so without this the portal is reachable but never responds, and
+// the long-press poll inside it dies too. Deleting wifiLoop() from loop() left
+// the whole suite green, because the portal was only ever tested in isolation.
+static void test_loop_services_the_portal_every_iteration() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  startLanWebPortal();
+  g_wm.process = 0;
+  g_wm.portal_active_ticks = 0;          // stays up; process() just returns false
+  for (int i = 0; i < 25; ++i) loop();
+  char m[144];
+  snprintf(m, sizeof(m), "loop() serviced the portal %d times in 25 iterations",
+           g_wm.process);
+  TEST_ASSERT_TRUE_MESSAGE(g_wm.process >= 20, m);
+}
+
+// loop() must report the ACTUAL blit result to the policy. Hardcoding true
+// re-opens the ghost-aircraft bug at the call site: a clearing frame that never
+// reached the panel is recorded as painted, and the last targets stay burned on.
+static void test_a_declined_frame_is_not_recorded_as_painted() {
+  g_espwifi.has_creds = true;
+  WiFi.status_ = WL_CONNECTED;
+  setup();
+  g_http.reset();
+  g_http.body = "{\"ac\":[{\"hex\":\"aa\",\"lat\":40.5,\"lon\":-3.6,\"gs\":200,\"track\":90}]}";
+  g_http.code = HTTP_CODE_OK;
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  for (int i = 0; i < 30; ++i) loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0, "precondition: radar is up");
+
+  g_http.body = "{\"ac\":[]}";             // the sky empties
+  services::adsb::fetchUpdate(40.4456, -3.6984, 30.0f);
+  g_mutex_take_fails = 100;              // ...and every clearing frame is declined
+  for (int i = 0; i < 30; ++i) loop();
+  g_gfx.reset();
+  g_mutex_take_fails = 0;                // the lock frees up again
+  for (int i = 0; i < 30; ++i) loop();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::Push) > 0,
+      "the clearing frame must still be retried; recorded as painted while it "
+      "never landed, the last aircraft stay burned on the panel");
+}
+
 // A frame costs ~44 ms; loop() must rate-limit rendering or it starves the
 // portal and the button.
 static void test_loop_renders_no_faster_than_the_render_interval() {
@@ -306,6 +358,8 @@ int main(int, char**) {
   RUN_TEST(test_a_brief_drop_does_not_blank_the_radar_permanently);
   RUN_TEST(test_a_portal_settings_change_repaints_an_empty_radar);
   RUN_TEST(test_the_settings_repaint_is_a_one_shot);
+  RUN_TEST(test_loop_services_the_portal_every_iteration);
+  RUN_TEST(test_a_declined_frame_is_not_recorded_as_painted);
   RUN_TEST(test_loop_renders_no_faster_than_the_render_interval);
   RUN_TEST(test_loop_does_not_render_while_disconnected);
   RUN_TEST(test_loop_waits_the_grace_period_before_reconnecting);

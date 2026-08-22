@@ -446,7 +446,10 @@ struct AircraftDrawItem {
 struct BeyondDotDrawItem {
   int x = 0;
   int y = 0;
-  int dist_sq = 0;
+  // TRUE distance from the centre, not the drawn position: every rim dot is
+  // clipped onto the same circle, so sorting on the screen position compared
+  // identical values and the far-first order never actually happened.
+  float dist_km = 0.0f;
   bool stale = false;
 };
 
@@ -466,7 +469,7 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
   for (size_t i = 1; i < count; ++i) {
     const BeyondDotDrawItem key = items[i];
     size_t j = i;
-    while (j > 0 && items[j - 1].dist_sq < key.dist_sq) {
+    while (j > 0 && items[j - 1].dist_km < key.dist_km) {
       items[j] = items[j - 1];
       --j;
     }
@@ -552,7 +555,7 @@ bool drawAircraft() {
     }
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
-    dots[dot_count].dist_sq = radar::distSqFromCenter(dot_x, dot_y);
+    dots[dot_count].dist_km = dist_km;
     dots[dot_count].stale = stale;
     ++dot_count;
   }
