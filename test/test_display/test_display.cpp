@@ -52,8 +52,20 @@ static void publishTargets(const Target* t, int n) {
   TEST_ASSERT_TRUE(services::adsb::fetchUpdate(kLat, kLon, 30.0f));
 }
 
+/**
+ * Font metrics are computed once and latched in file-statics, so the smooth-font
+ * path is unreachable after any test has run the bitmap path. These live in
+ * anonymous namespaces inside the included .cpp, so this TU can clear them.
+ */
+static void useFont(bool smooth) {
+  g_font_is_smooth = smooth;
+  ui::s_label_metrics_ready = false;
+  ui::s_tag_label_metrics_ready = false;
+  ui::runway::s_runway_label_ready = false;
+}
+
 void setUp() {
-  g_nvs.reset(); g_gfx.resetAll(); mockSetMs(500000); g_mutex_take_fails = 0; g_font_is_smooth = false;
+  g_nvs.reset(); g_gfx.resetAll(); mockSetMs(500000); g_mutex_take_fails = 0; useFont(false);
   Preferences seed; seed.begin("planeradar", false); seed.putUChar("rangeIdx", 1); seed.end();
   rangeInit();
   services::location::saveFromStrings("40.445564", "-3.698361");
@@ -63,6 +75,27 @@ void tearDown() {}
 // ---------------------------------------------------------------- tags -----
 
 struct Rect { int x, y, w, h; };
+
+/**
+ * Resolve a recorded text op to its actual pixel box. The datum decides which
+ * corner x/y refer to; treating every op as top-left silently mislocates
+ * anything drawn with a centre or right datum (the scale label, the cardinals,
+ * the runway ICAOs).
+ */
+static Rect textRect(const DrawOp& o) {
+  int left = o.x, top = o.y;
+  switch (o.datum) {
+    case top_center: case middle_center: case bottom_center: left = o.x - o.w / 2; break;
+    case top_right:  case middle_right:  case bottom_right:  left = o.x - o.w;     break;
+    default: break;
+  }
+  switch (o.datum) {
+    case middle_left: case middle_center: case middle_right: top = o.y - o.h / 2; break;
+    case bottom_left: case bottom_center: case bottom_right: top = o.y - o.h;     break;
+    default: break;
+  }
+  return {left, top, o.w, o.h};
+}
 static bool overlaps(const Rect& a, const Rect& b) {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
@@ -83,8 +116,7 @@ static std::vector<Rect> tagBlocks() {
   std::vector<Rect> out;
   for (const auto& o : g_gfx.of(DrawOp::Text)) {
     if (o.text.empty() || !isTagText(o.text)) continue;
-    const int left = (o.datum == top_right) ? o.x - o.w : o.x;
-    out.push_back({left, o.y, o.w, o.h});
+    out.push_back(textRect(o));
   }
   return out;
 }
@@ -595,6 +627,102 @@ static void test_the_grid_is_cleared_every_frame() {
       "without a clear, the previous frame's traffic ghosts");
 }
 
+// ------------------------------- smooth (VLW) font path --------------------
+// The device ships the VLW font as its PRIMARY path; the bitmap font is only a
+// fallback for when the embedded blob fails to load. Everything above runs the
+// fallback, so these re-run the layout invariants with smooth metrics selected.
+
+static void test_smooth_font_is_actually_selected() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_cardinal_use_vlw,
+      "with a smooth font available the cardinal labels must use it");
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_tag_use_vlw, "and so must the aircraft tags");
+}
+
+// findVlwSizeForHeight binary-searches a scale to hit a target cap height.
+static void test_the_vlw_size_search_converges_on_the_target_height() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_cardinal_vlw_size > 0.25f && ui::s_cardinal_vlw_size < 1.2f,
+      "the search must land inside its own bracket, not on an endpoint");
+  // Applying that size must reproduce roughly the requested cap height.
+  displayFontSetSmoothSize(tft, ui::s_cardinal_vlw_size);
+  TEST_ASSERT_INT_WITHIN_MESSAGE(3, kCardinalLabelHeightPx, tft.fontHeight(),
+      "the chosen scale must actually produce the target height");
+}
+
+static void test_the_scale_label_is_smaller_than_the_cardinals() {
+  useFont(true);
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::s_scale_vlw_size < ui::s_cardinal_vlw_size,
+      "the range label is deliberately set shorter than N/S/E/W");
+}
+
+static void test_tags_never_overlap_with_the_smooth_font_either() {
+  useFont(true);
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.2f, 200, 90, 0.1f, "AAA111"},
+                {2.0f, 0.0f, 200, 90, 0.1f, "BBB222"},
+                {2.1f, -0.2f, 200, 90, 0.1f, "CCC333"},
+                {2.0f, -0.4f, 200, 90, 0.1f, "DDD444"}};
+  publishTargets(t, 4);
+  radarDisplayDraw();
+  const auto blocks = tagBlocks();
+  TEST_ASSERT_TRUE_MESSAGE(blocks.size() >= 6, "precondition: tags must be drawn");
+  for (size_t i = 0; i < blocks.size(); ++i)
+    for (size_t j = i + 1; j < blocks.size(); ++j)
+      TEST_ASSERT_FALSE_MESSAGE(overlaps(blocks[i], blocks[j]),
+          "collision avoidance must hold for the smooth font too");
+}
+
+static void test_runway_labels_render_with_the_smooth_font() {
+  useFont(true);
+  atAirport();
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(ui::runway::s_runway_label_use_vlw,
+      "runway ICAOs must use the smooth font when it is available");
+  TEST_ASSERT_TRUE_MESSAGE(drewLabel("LEMD"), "and still be drawn");
+}
+
+// --------------------------------- nothing may be drawn off-panel ----------
+
+static void test_no_text_or_rect_is_drawn_outside_the_panel() {
+  atAirport();
+  Target t[] = {{2.0f, 1.5f, 200, 90, 0.1f, "WWMM88"},    // wide glyphs, near rim
+                {-2.0f, -1.5f, 200, 270, 0.1f, "IIll11"}};
+  publishTargets(t, 2);
+  radarDisplayDraw();
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    // The N/S/E/W bezel labels are deliberately nudged past the edge
+    // (kCardinalNorthOffsetY = -1 etc.) to sit against the rim of the round
+    // panel, so they are exempt. Everything else must be fully visible.
+    if (o.text.size() == 1 && strchr("NSEW", o.text[0])) continue;
+    const Rect r = textRect(o);
+    char m[176];
+    snprintf(m, sizeof(m), "text '%s' spans x[%d,%d] y[%d,%d] -- outside the 240x240 panel",
+             o.text.c_str(), r.x, r.x + r.w, r.y, r.y + r.h);
+    TEST_ASSERT_TRUE_MESSAGE(r.x >= 0 && r.x + r.w <= kSize && r.y >= 0 &&
+                             r.y + r.h <= kSize, m);
+  }
+  // The cardinals are exempt from the bounds check, but must still be close to
+  // the edge rather than arbitrarily off-panel.
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (!(o.text.size() == 1 && strchr("NSEW", o.text[0]))) continue;
+    char m[128];
+    const Rect r = textRect(o);
+    snprintf(m, sizeof(m), "cardinal '%s' box y[%d,%d] is more than a few px off-panel",
+             o.text.c_str(), r.y, r.y + r.h);
+    TEST_ASSERT_TRUE_MESSAGE(r.y > -6 && r.y + r.h < kSize + 6, m);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These two must run first: the frame sprite is created once and cached in a
@@ -621,6 +749,12 @@ int main(int, char**) {
   RUN_TEST(test_the_scale_label_follows_the_range_and_units);
   RUN_TEST(test_a_locked_aircraft_list_suppresses_the_blit);
   RUN_TEST(test_the_grid_is_cleared_every_frame);
+  RUN_TEST(test_smooth_font_is_actually_selected);
+  RUN_TEST(test_the_vlw_size_search_converges_on_the_target_height);
+  RUN_TEST(test_the_scale_label_is_smaller_than_the_cardinals);
+  RUN_TEST(test_tags_never_overlap_with_the_smooth_font_either);
+  RUN_TEST(test_runway_labels_render_with_the_smooth_font);
+  RUN_TEST(test_no_text_or_rect_is_drawn_outside_the_panel);
   RUN_TEST(test_runways_are_drawn_at_a_real_airport);
   RUN_TEST(test_no_runways_when_the_overlay_is_switched_off);
   RUN_TEST(test_no_runways_in_the_middle_of_the_ocean);

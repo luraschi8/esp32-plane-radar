@@ -404,16 +404,20 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   return true;
 }
 
-void fetchTask(void*) {
-  bool was_connected = false;
-  for (;;) {
-    const bool link_up = WiFi.status() == WL_CONNECTED;
+/**
+ * One iteration of the fetch task, split out so the link-state transition is
+ * reachable without a scheduler: the task body is an infinite loop and the mock
+ * xTaskCreate never runs it, which left the release-on-link-loss branch -- the
+ * fix for ~33 KB of mbedTLS state pinned across a reconnect -- untested.
+ */
+void fetchTick(bool link_up, bool* was_connected) {
+  {
     if (link_up) {
       double lat = 0.0;
       double lon = 0.0;
       services::location::snapshot(&lat, &lon);
       fetchUpdate(lat, lon, ui::radar::fetchRadiusKm());
-    } else if (was_connected) {
+    } else if (*was_connected) {
       // The session is only torn down on a *request* error, and the link
       // almost always drops between requests (a fetch is ~0.5 s of a ~3.5 s
       // cycle). Left alone, ~33 KB of dead mbedTLS state stays pinned through
@@ -423,7 +427,14 @@ void fetchTask(void*) {
       stopSession();
       Serial.println("adsb: link down, TLS session released");
     }
-    was_connected = link_up;
+    *was_connected = link_up;
+  }
+}
+
+void fetchTask(void*) {
+  bool was_connected = false;
+  for (;;) {
+    fetchTick(WiFi.status() == WL_CONNECTED, &was_connected);
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
 }

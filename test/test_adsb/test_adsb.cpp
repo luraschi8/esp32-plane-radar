@@ -343,9 +343,90 @@ static void test_aircraft_cap_is_respected() {
       "in drawAircraft -- update the memory notes in CLAUDE.md if it moves");
 }
 
+// --------------------------------------------- task and link lifecycle -----
+
+// ~33 KB of mbedTLS state stays pinned across a WiFi outage unless the session
+// is released on the down transition. A fetch is ~0.5 s of a ~3.5 s cycle, so
+// the link almost always drops BETWEEN requests, where no error path runs.
+static void test_the_tls_session_is_released_when_the_link_drops() {
+  fetch(kAirbornePayload());                 // a session is open
+  bool was_connected = true;
+  g_tls = MockTlsStats();
+  fetchTick(/*link_up=*/false, &was_connected);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop,
+      "a link that drops between fetches must still free the TLS buffers");
+  TEST_ASSERT_FALSE(was_connected);
+}
+
+static void test_a_link_that_stays_down_is_not_torn_down_repeatedly() {
+  fetch(kAirbornePayload());
+  bool was_connected = true;
+  g_tls = MockTlsStats();
+  for (int i = 0; i < 5; ++i) fetchTick(false, &was_connected);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_tls.stop,
+      "only the transition releases; repeated down ticks must be no-ops");
+}
+
+static void test_no_teardown_when_the_link_was_never_up() {
+  bool was_connected = false;
+  g_tls = MockTlsStats();
+  fetchTick(false, &was_connected);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, g_tls.stop, "nothing was ever opened");
+}
+
+static void test_a_tick_while_connected_fetches() {
+  g_http.reset(); g_http.body = kAirbornePayload(); g_http.code = HTTP_CODE_OK;
+  bool was_connected = false;
+  fetchTick(true, &was_connected);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, g_http.get_calls, "a connected tick must fetch");
+  TEST_ASSERT_TRUE(was_connected);
+}
+
+// loop() retries startFetchTask() every 10 s while it has not succeeded, so the
+// failure path must be both reportable and leak-free.
+static void test_task_creation_failure_is_reported_and_retryable() {
+  g_task_create_fail = 1;
+  TEST_ASSERT_FALSE_MESSAGE(startFetchTask(), "a failed xTaskCreate must be reported");
+  TEST_ASSERT_TRUE_MESSAGE(startFetchTask(),
+      "the retry must succeed -- the failure path has to release the mutex, or "
+      "every retry strands another one");
+}
+
+static void test_mutex_allocation_failure_is_reported() {
+  g_mutex_alloc_fail = 1;
+  TEST_ASSERT_FALSE_MESSAGE(startFetchTask(), "no mutex means no safe handoff");
+}
+
+static void test_starting_the_task_twice_is_idempotent() {
+  TEST_ASSERT_TRUE(startFetchTask());
+  TEST_ASSERT_TRUE_MESSAGE(startFetchTask(),
+      "loop() calls this repeatedly; it must not spawn a second 8 KB task");
+}
+
+// The filter is why parsing fits in the heap budget. Asserting only that the
+// field list is right would not notice it being dropped from the call.
+static void test_unwanted_fields_are_not_retained() {
+  std::string p = "{\"ac\":[{\"hex\":\"aa\",\"lat\":40.4,\"lon\":-3.6,\"gs\":200,"
+                  "\"track\":90,\"junk\":\"";
+  p += std::string(3000, 'x');            // a field far larger than the record
+  p += "\"}]}";
+  TEST_ASSERT_TRUE(fetch(p.c_str()));
+  TEST_ASSERT_EQUAL_INT(1, (int)aircraftCount());
+  // Nothing in Aircraft can hold 3 KB, so this only proves parsing survived.
+  // The real guard is that the filter kept the document small enough to fit.
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("aa", aircraftList()[0].callsign,
+      "the wanted fields must still be extracted alongside a huge unwanted one");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
-  // Must run first: s_last_update_ms is file-static and no test can reset it.
+  // These three must run before anything creates the task or the mutex:
+  // startFetchTask() is idempotent by design, so once it has succeeded the
+  // failure paths become unreachable.
+  RUN_TEST(test_mutex_allocation_failure_is_reported);
+  RUN_TEST(test_task_creation_failure_is_reported_and_retryable);
+  RUN_TEST(test_starting_the_task_twice_is_idempotent);
+  // Must run first among the age tests: s_last_update_ms is file-static.
   RUN_TEST(test_age_is_zero_before_the_first_fetch);
   RUN_TEST(test_filter_covers_every_field_the_parser_reads);
   RUN_TEST(test_url_is_built_from_centre_and_radius);
@@ -375,5 +456,10 @@ int main(int, char**) {
   RUN_TEST(test_error_after_a_real_connection_stops_once_only);
   RUN_TEST(test_a_transient_failure_still_succeeds_within_the_cap);
   RUN_TEST(test_aircraft_cap_is_respected);
+  RUN_TEST(test_the_tls_session_is_released_when_the_link_drops);
+  RUN_TEST(test_a_link_that_stays_down_is_not_torn_down_repeatedly);
+  RUN_TEST(test_no_teardown_when_the_link_was_never_up);
+  RUN_TEST(test_a_tick_while_connected_fetches);
+  RUN_TEST(test_unwanted_fields_are_not_retained);
   return UNITY_END();
 }
