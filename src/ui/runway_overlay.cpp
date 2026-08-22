@@ -127,7 +127,13 @@ struct CachedLabel {
   uint16_t airport_idx;
 };
 
-constexpr size_t kMaxCachedSegments = 32;
+// Overridable so tests can drive the truncation path: with the shipped dataset
+// the worst case anywhere on Earth is 12 strips, so 32 is never reached and the
+// label-before-cap ordering would otherwise be untestable.
+#ifndef RUNWAY_MAX_CACHED_SEGMENTS
+#define RUNWAY_MAX_CACHED_SEGMENTS 32
+#endif
+constexpr size_t kMaxCachedSegments = RUNWAY_MAX_CACHED_SEGMENTS;
 
 CachedSegment s_segments[kMaxCachedSegments];
 size_t s_segment_count = 0;

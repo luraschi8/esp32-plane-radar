@@ -36,7 +36,10 @@ struct GfxRecorder {
   int sprite_alloc_attempts = 0;
   int char_width = 7;          // deterministic text metrics
   int line_height = 16;
-  void reset() { ops.clear(); sprite_alloc_fails = false; sprite_alloc_attempts = 0; }
+  /** Clears the log only. Scripted behaviour survives, so a mid-test reset()
+   *  cannot silently re-enable an allocation the test deliberately disabled. */
+  void reset() { ops.clear(); }
+  void resetAll() { ops.clear(); sprite_alloc_fails = false; sprite_alloc_attempts = 0; }
   size_t count(DrawOp::Kind k) const {
     size_t n = 0; for (const auto& o : ops) if (o.kind == k) ++n; return n;
   }

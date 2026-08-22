@@ -53,7 +53,7 @@ static void publishTargets(const Target* t, int n) {
 }
 
 void setUp() {
-  g_nvs.reset(); g_gfx.reset(); mockSetMs(500000); g_font_is_smooth = false;
+  g_nvs.reset(); g_gfx.resetAll(); mockSetMs(500000); g_mutex_take_fails = 0; g_font_is_smooth = false;
   Preferences seed; seed.begin("planeradar", false); seed.putUChar("rangeIdx", 1); seed.end();
   rangeInit();
   services::location::saveFromStrings("40.445564", "-3.698361");
@@ -99,6 +99,8 @@ static void test_tags_never_overlap_each_other() {
   publishTargets(t, 4);
   radarDisplayDraw();
   const auto blocks = tagBlocks();
+  TEST_ASSERT_TRUE_MESSAGE(blocks.size() >= 6,
+      "precondition: tags must actually be drawn, or this passes vacuously");
   for (size_t i = 0; i < blocks.size(); ++i)
     for (size_t j = i + 1; j < blocks.size(); ++j) {
       char m[128];
@@ -121,13 +123,20 @@ static void test_a_tag_stays_next_to_its_own_symbol() {
   // Every triangle is a symbol; every tag block must sit near one of them.
   const auto tris = g_gfx.of(DrawOp::Triangle);
   TEST_ASSERT_TRUE(tris.size() >= 3);
-  const int max_dy = g_gfx.line_height * 2;      // one text line of slack
-  const int max_dx = 60;
+  // Measure from the tag's NEAR edge to the symbol, not from its centre, and
+  // do not add the block width -- doing both made the effective gate ~100 px on
+  // a 240 px panel, wide enough to accept the ~51 px displacement bug this test
+  // exists to catch.
+  TEST_ASSERT_TRUE_MESSAGE(tagBlocks().size() >= 3,
+      "precondition: tags must actually be drawn, or this passes vacuously");
+  const int max_dy = g_gfx.line_height * 2;
+  const int max_dx = 34;   // symbol half-width + gap + a little slack
   for (const auto& b : tagBlocks()) {
     bool near_a_symbol = false;
     for (const auto& tri : tris) {
-      const int cx = b.x + b.w / 2, cy = b.y + b.h / 2;
-      if (abs(cx - tri.x) <= max_dx + b.w && abs(cy - tri.y) <= max_dy + b.h)
+      const int near_edge = (b.x + b.w / 2 < tri.x) ? (b.x + b.w) : b.x;
+      const int cy = b.y + b.h / 2;
+      if (abs(near_edge - tri.x) <= max_dx && abs(cy - tri.y) <= max_dy + b.h)
         near_a_symbol = true;
     }
     char m[96];
@@ -253,11 +262,16 @@ static void test_sprite_failure_falls_back_to_direct_drawing() {
 
 // A 115 KB allocation must not be retried every frame on a starved heap.
 static void test_sprite_allocation_is_not_retried_every_frame() {
+  // Advance past any backoff a previous test may have armed, or this measures
+  // inherited state instead of its own.
+  mockAdvanceMs(60000);
   g_gfx.sprite_alloc_fails = true;
   Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
   publishTargets(t, 1);
   radarDisplayDraw();
   const int after_first = g_gfx.sprite_alloc_attempts;
+  TEST_ASSERT_TRUE_MESSAGE(after_first > 0,
+      "this test must itself trigger an allocation attempt, not inherit one");
   for (int i = 0; i < 20; ++i) { mockAdvanceMs(100); radarDisplayRefreshAircraft(); }
   TEST_ASSERT_EQUAL_INT_MESSAGE(after_first, g_gfx.sprite_alloc_attempts,
       "inside the backoff window the allocation must not be attempted again");
@@ -431,10 +445,10 @@ static void test_the_shipped_dataset_never_reaches_the_caps() {
   TEST_ASSERT_TRUE_MESSAGE(worst_airports <= (int)ui::runway::kMaxAirportLabels, m);
 }
 
-// Label collection must sit BEFORE the strip cap, or a dropped strip takes its
-// airport's identity with it. Unreachable with today's dataset (above), so this
-// pins the ordering directly instead.
-static void test_label_is_collected_before_the_strip_cap() {
+// Sanity only: an in-range airport is both drawn and identified. The cap is
+// unreachable with the shipped dataset, so the label-before-cap ORDERING is
+// pinned in test_runway_cap, which forces the cap to 1.
+static void test_an_in_range_airport_is_drawn_and_identified() {
   atAirport();
   radarDisplayDraw();
   TEST_ASSERT_TRUE_MESSAGE(runwayStrips() > 0 && drewLabel("LEMD"),
@@ -465,6 +479,6 @@ int main(int, char**) {
   RUN_TEST(test_cache_rebuilds_when_the_range_changes);
   RUN_TEST(test_cache_rebuilds_when_the_location_changes);
   RUN_TEST(test_the_shipped_dataset_never_reaches_the_caps);
-  RUN_TEST(test_label_is_collected_before_the_strip_cap);
+  RUN_TEST(test_an_in_range_airport_is_drawn_and_identified);
   return UNITY_END();
 }
