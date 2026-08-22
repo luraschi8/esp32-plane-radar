@@ -746,15 +746,15 @@ bool ensureFrameSprite() {
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 bool renderFrame() {
-  const unsigned long t_grid = DEBUG_LOG_ENABLED ? micros() : 0;
+  [[maybe_unused]] const uint32_t t_grid = DEBUG_LOG_ENABLED ? micros() : 0;
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
-  const unsigned long t_traffic = DEBUG_LOG_ENABLED ? micros() : 0;
+  [[maybe_unused]] const uint32_t t_traffic = DEBUG_LOG_ENABLED ? micros() : 0;
   bool traffic_drawn = false;
   {
     const DrawScope scope(s_frame);
     traffic_drawn = drawAircraft();
   }
-  const unsigned long t_blit = DEBUG_LOG_ENABLED ? micros() : 0;
+  [[maybe_unused]] const uint32_t t_blit = DEBUG_LOG_ENABLED ? micros() : 0;
   // The sprite now holds a grid with no traffic on it. Blitting that would
   // flash every target off for a frame, so leave the last complete frame on
   // the panel and try again on the next tick.
@@ -764,15 +764,20 @@ bool renderFrame() {
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
 #if DEBUG_LOG_ENABLED
-  // Once a second at most: a serial line is ~90 us per character at 115200 and
-  // would itself become the thing being measured inside a 43.8 ms frame.
-  static unsigned long s_last_frame_report_ms = 0;
-  const unsigned long now_ms = millis();
-  if (now_ms - s_last_frame_report_ms >= 1000) {
+  // Once a second at most: Serial here is USB CDC, whose write blocks for up
+  // to 100 ms when no host is draining the ring -- a whole render tick. uint32_t
+  // throughout so the wrap arithmetic matches the device's 32-bit millis()/
+  // micros() even if this is ever compiled for a 64-bit host.
+  static uint32_t s_last_frame_report_ms = 0;
+  const uint32_t now_ms = millis();
+  if (now_ms - s_last_frame_report_ms >= config::kDebugFrameReportMs) {
     s_last_frame_report_ms = now_ms;
-    const unsigned long t_end = micros();
-    DEBUG_LOG("frame: grid %lu us + traffic %lu us + blit %lu us = %lu us total",
-              t_traffic - t_grid, t_blit - t_traffic, t_end - t_blit, t_end - t_grid);
+    const uint32_t t_end = micros();
+    // Kept under 64 rendered chars: Print::printf formats into a 64-byte stack
+    // buffer and mallocs past it, and there is no heap in the draw path.
+    DEBUG_LOG("frame: %lu+%lu+%lu = %lu us",
+              (unsigned long)(t_traffic - t_grid), (unsigned long)(t_blit - t_traffic),
+              (unsigned long)(t_end - t_blit), (unsigned long)(t_end - t_grid));
   }
 #endif
   return true;

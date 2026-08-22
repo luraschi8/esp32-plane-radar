@@ -73,7 +73,6 @@ void setup() {
   Serial.println();
   Serial.println("Plane Radar");
 
-  DEBUG_LOG("build: debug logging ON (PLANE_RADAR_DEBUG=1)");
   DEBUG_LOG_HEAP("at boot");
   bootButtonInit();
   displayInit();

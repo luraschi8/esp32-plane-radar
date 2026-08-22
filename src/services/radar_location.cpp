@@ -65,7 +65,7 @@ void init() {
   // A read-only open of a namespace that has never been written logs
   // "nvs_open failed: NOT_FOUND" from the framework. That is expected on a
   // first boot and is not an error; DEBUG_LOG says which way it went.
-  const bool opened = prefs.begin(kPrefsNamespace, true);
+  [[maybe_unused]] const bool opened = prefs.begin(kPrefsNamespace, true);
   DEBUG_LOG("location: nvs namespace '%s' %s", kPrefsNamespace,
             opened ? "opened" : "absent (first boot or after a reset)");
   if (prefs.isKey(kKeyLat) && prefs.isKey(kKeyLon)) {

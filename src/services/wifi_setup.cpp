@@ -155,12 +155,14 @@ bool consumeForceConfigPortal() {
   // logs "nvs_open failed: NOT_FOUND" at [E] level. That is the expected steady
   // state, not a fault -- this line says so in the log next to it.
   if (!prefs.begin(kWifiPrefsNamespace, true)) {
-    DEBUG_LOG("wifi: nvs namespace '%s' absent -- no pending force-portal flag "
-              "(the NOT_FOUND above is expected)", kWifiPrefsNamespace);
+    // Tagged with __func__: both callers run at boot and printed identical
+    // text, so you could not tell which NOT_FOUND belonged to which.
+    DEBUG_LOG("wifi/%s: no '%s' namespace, no forced portal", __func__,
+              kWifiPrefsNamespace);
     return false;
   }
   const bool pending = prefs.getBool(kPrefsForcePortalKey, false);
-  DEBUG_LOG("wifi: force-portal flag %s", pending ? "SET" : "clear");
+  DEBUG_LOG("wifi/%s: force-portal flag %s", __func__, pending ? "SET" : "clear");
   prefs.end();
   if (!pending) {
     return false;
@@ -382,12 +384,14 @@ bool wifiShowsSetupScreenOnBoot() {
   // logs "nvs_open failed: NOT_FOUND" at [E] level. That is the expected steady
   // state, not a fault -- this line says so in the log next to it.
   if (!prefs.begin(kWifiPrefsNamespace, true)) {
-    DEBUG_LOG("wifi: nvs namespace '%s' absent -- no pending force-portal flag "
-              "(the NOT_FOUND above is expected)", kWifiPrefsNamespace);
+    // Tagged with __func__: both callers run at boot and printed identical
+    // text, so you could not tell which NOT_FOUND belonged to which.
+    DEBUG_LOG("wifi/%s: no '%s' namespace, no forced portal", __func__,
+              kWifiPrefsNamespace);
     return false;
   }
   const bool pending = prefs.getBool(kPrefsForcePortalKey, false);
-  DEBUG_LOG("wifi: force-portal flag %s", pending ? "SET" : "clear");
+  DEBUG_LOG("wifi/%s: force-portal flag %s", __func__, pending ? "SET" : "clear");
   prefs.end();
   return pending;
 }

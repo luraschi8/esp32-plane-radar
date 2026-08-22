@@ -171,7 +171,9 @@ pio device monitor
 Full build / verify / flash procedure, including troubleshooting: **[OPS.md](OPS.md)**.
 
 Three `[E]`-level lines at boot (`spiAttachMISO`, two `nvs_open failed: NOT_FOUND`) are expected and come from
-the framework — see [OPS.md §3.3](OPS.md).
+the framework — see [OPS.md §3.3](OPS.md). An occasional `adsb: JSON parse error: IncompleteInput` is a
+dropped keep-alive connection, not a fault; the next cycle recovers and the display keeps the previous
+traffic.
 
 - PlatformIO envs: **`supermini`** (the firmware), **`supermini-debug`** (same firmware, verbose logging —
   [OPS.md §3.4](OPS.md)), **`native`** (host unit tests, `pio test -e native`)

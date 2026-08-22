@@ -31,6 +31,7 @@ static void test_a_debug_line_is_emitted_and_tagged() {
   TEST_ASSERT_TRUE_MESSAGE(logged("dbg: hello"),
       "the line must carry the dbg: tag so it is greppable and obviously not "
       "release output");
+  TEST_ASSERT_FALSE_MESSAGE(Serial.log.empty(), "nothing was logged at all");
   TEST_ASSERT_TRUE_MESSAGE(Serial.log.back() == '\n',
       "each line must be terminated, or the next one runs into it");
 }
@@ -59,6 +60,44 @@ static void test_a_zero_argument_call_does_not_break_the_format() {
       "the ##__VA_ARGS__ form must accept a bare format string");
 }
 
+// The heap line is the one OPS.md's release-clean check greps for
+// (`strings firmware.bin | grep -c "dbg: "` must print 0). An untagged heap
+// line would sit in a release image and pass that check, so the tag is a
+// correctness property, not cosmetics.
+static void test_the_heap_line_is_tagged_and_terminated() {
+  ESP.free_heap = 1234;
+  ESP.max_alloc = 567;
+  DEBUG_LOG_HEAP("stage");
+  char m[224];
+  snprintf(m, sizeof(m), "log was: '%s'", Serial.log.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.rfind("dbg: ", 0) == 0, m);
+  TEST_ASSERT_FALSE_MESSAGE(Serial.log.empty(), "nothing was logged at all");
+  TEST_ASSERT_TRUE_MESSAGE(Serial.log.back() == '\n', m);
+}
+
+static void test_the_heap_line_evaluates_its_argument_once() {
+  int calls = 0;
+  auto tag = [&calls]() { ++calls; return "stage"; };
+  DEBUG_LOG_HEAP(tag());
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, calls,
+      "the heap macro must not evaluate its argument more than once");
+}
+
+// Both macros must survive being the lone body of an unbraced if. The disabled
+// forms are covered in test_settings; these are the enabled ones, which is
+// where a stray `if (...)` wrapper would break the following else.
+static void test_both_macros_are_well_formed_statements_when_enabled() {
+  int taken = 0;
+  if (false) DEBUG_LOG("not this branch");
+  else taken = 1;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, taken, "DEBUG_LOG detached the else");
+
+  taken = 0;
+  if (false) DEBUG_LOG_HEAP("not this branch");
+  else taken = 1;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, taken, "DEBUG_LOG_HEAP detached the else");
+}
+
 static void test_the_heap_line_reports_both_numbers() {
   ESP.free_heap = 30856;
   ESP.max_alloc = 9204;
@@ -85,6 +124,9 @@ int main(int, char**) {
   RUN_TEST(test_format_arguments_are_substituted);
   RUN_TEST(test_arguments_are_evaluated_exactly_once);
   RUN_TEST(test_a_zero_argument_call_does_not_break_the_format);
+  RUN_TEST(test_the_heap_line_is_tagged_and_terminated);
+  RUN_TEST(test_the_heap_line_evaluates_its_argument_once);
+  RUN_TEST(test_both_macros_are_well_formed_statements_when_enabled);
   RUN_TEST(test_the_heap_line_reports_both_numbers);
   RUN_TEST(test_successive_lines_stay_separate);
   return UNITY_END();

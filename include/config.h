@@ -63,6 +63,8 @@ constexpr unsigned long kFetchTaskRetryMs = 10000;
  * 100 ms is ~10 FPS at under half duty, leaving the loop free for the config
  * portal and the BOOT button.
  */
+/** Debug builds only: throttle for the per-frame timing line (ms). */
+constexpr unsigned long kDebugFrameReportMs = 1000;
 constexpr unsigned long kRenderIntervalMs = 100;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;

@@ -341,7 +341,15 @@ static void test_a_disabled_debug_line_is_a_well_formed_statement() {
   if (DEBUG_LOG_ENABLED) DEBUG_LOG("in the if");
   else taken = 1;
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, taken,
-      "the macro must not swallow or detach a following else");
+      "DEBUG_LOG must not swallow or detach a following else");
+
+  // A bare `{ }` expansion compiles here but detaches the else -- the heap
+  // macro needs the same do/while(0) guarantee, in both expansions.
+  taken = 0;
+  if (DEBUG_LOG_ENABLED) DEBUG_LOG_HEAP("in the if");
+  else taken = 1;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, taken,
+      "DEBUG_LOG_HEAP must not swallow or detach a following else");
 }
 
 int main(int, char**) {

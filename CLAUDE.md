@@ -28,12 +28,24 @@ python3 scripts/build_large_airports.py   # regenerate the embedded runway datas
 what `[env:supermini-debug]` adds. It is one build flag over identical sources, not a second code path. When
 off, the macros expand to `do {} while (0)`: no branch, no format strings in flash, and **arguments are not
 evaluated** — so never put a side effect inside a `DEBUG_LOG(...)` call, and guard anything expensive to
-compute for a message on `DEBUG_LOG_ENABLED` rather than relying on the macro to skip it. Both expansions are
-tested (`test_debug_log` for on, four tests in `test_settings` for off, including that the disabled form does
-not evaluate its arguments and survives an unbraced `if`/`else`). The release image is byte-for-byte the same
-size as before the facility existed, and `strings firmware.bin | grep 'dbg: '` finds nothing in it.
+compute for a message on `DEBUG_LOG_ENABLED` rather than relying on the macro to skip it. A local computed
+only for a log message needs `[[maybe_unused]]`. Both expansions are tested (`test_debug_log` for on, five
+tests in `test_settings` for off), including single evaluation, the `dbg: ` tag, line termination, and both
+macros surviving an unbraced `if`/`else`. The release image is unchanged in size (55,012 B RAM / 1,247,850 B
+flash); the only bytes that differ from a build without the facility are the build stamps. Debug adds 8 B RAM
+and ~2 KB flash. `strings firmware.bin | grep 'dbg: '` finds nothing in the release image, which is what
+`DEBUG_LOG_HEAP` routing through `DEBUG_LOG` protects — an untagged line would pass that check.
+
 Never call `DEBUG_LOG` from the per-aircraft draw loop, the per-segment runway loop, or the fetch task's inner
-loop: a 115200-baud line is ~90 us per character and would become the thing being measured.
+loop. `Serial` here is **USB CDC (HWCDC), not a UART**, so the cost is not baud rate: `HWCDC::write` blocks on
+the TX ring for up to **100 ms** when no host is draining it — a full render tick against a ~35 ms frame. In
+the draw path and the fetch task also keep each rendered line under 64 characters, because `Print::printf`
+formats into a 64-byte stack buffer and `malloc`s past it.
+
+**Format strings are checked.** The framework ships `-Wno-format`, and project `build_flags` are emitted
+*before* the framework's, so a bare `-Wformat` is silently overridden — passing an integer to `%s` inside the
+fetch task used to compile clean. `build_unflags = -Wno-format` plus `build_src_flags = -Wformat
+-Werror=format -Wall -Wextra` fixes that for `src/` only (the libraries have their own pre-existing noise).
 
 **Run `pio test -e native` before and after any change** — 211 host-side tests across nine suites, ~18 s under ASan/UBSan:
 `test_geo` (projection, checked against the API's own dst/dir), `test_settings` (presets, units, NVS),

@@ -178,7 +178,9 @@ Every line is prefixed `dbg: ` so it is easy to filter. What you get:
 | `dbg: heap <stage> free N largest N` | at boot, after the display, after the 115 KB sprite, after setup, and around every fetch — this is how the memory table in CLAUDE.md was measured |
 | `dbg: location: …` / `dbg: range: …` | what the device actually loaded from NVS, and whether each namespace existed at all |
 | `dbg: wifi: force-portal flag …` | whether a BOOT reset is pending |
-| `dbg: fetch: N aircraft kept, N ms, stack free N B` | fetch cost and fetch-task stack headroom, every cycle instead of every 32nd |
+| `dbg: heap before fetch …` | the heap **at the moment mbedTLS asks for its two ~16.4 KB blocks** — the only reading that explains a TLS allocation failure. A `before fetch` with no matching `fetch:` line means the task stalled |
+| `dbg: heap begin failed / http failed / no stream` | the failure paths, each with a heap reading, so a fragmentation failure is distinguishable from a network one |
+| `dbg: fetch: N kept, N ms, stack free N B` | fetch cost and fetch-task stack headroom, every cycle instead of every 32nd |
 | `dbg: frame: grid N us + traffic N us + blit N us` | the frame budget, throttled to one line per second so the logging does not distort what it measures |
 
 Flash `-e supermini` again afterwards. Verify the release image really is clean:
@@ -188,8 +190,16 @@ pio run -e supermini && strings .pio/build/supermini/firmware.bin | grep -c "dbg
 ```
 
 When adding a call site: never inside the per-aircraft draw loop, the per-segment runway loop, or the fetch
-task's inner loop — a serial line at 115200 baud costs ~90 us per character, against a ~35 ms frame. And never
-put a side effect in a `DEBUG_LOG` argument: arguments are not evaluated when logging is compiled out.
+task's inner loop. `Serial` is USB CDC here, not a UART, so the hazard is not baud rate — `HWCDC::write`
+**blocks for up to 100 ms** when no host is draining the TX ring, which is a whole render tick against a
+~35 ms frame. In those paths keep each rendered line under 64 characters (`Print::printf` uses a 64-byte
+stack buffer and `malloc`s past it). Never put a side effect in a `DEBUG_LOG` argument — arguments are not
+evaluated when logging is compiled out — and mark any local computed only for a message `[[maybe_unused]]`.
+
+Format strings in `src/` are compiled with `-Wformat -Werror=format` (plus `-Wall -Wextra`), which required
+`build_unflags = -Wno-format`: the framework disables format checking and project flags are emitted before
+its own, so a bare `-Wformat` does nothing. Before that, passing an integer to `%s` in the fetch task — a
+crash on device — compiled clean.
 
 ---
 
@@ -302,7 +312,8 @@ the flash figure — the dataset is the largest project-owned contributor to ima
 | `radar: frame sprite alloc failed` | Out of heap for the 115 KB frame buffer; display falls back to direct drawing. Flash `-e supermini-debug` to see the heap ladder at boot and find what took the space |
 | `[E] spiAttachMISO(): SPI Does not have default pins` at boot | Expected — the display bus is write-only (`pin_miso = -1`). Not a fault |
 | `[E] nvs_open failed: NOT_FOUND` twice at boot | Expected — the `wifi` namespace only exists after a BOOT reset (section 3.3). A **third** occurrence means the location or range preset was lost |
-| `adsb: HTTP -1`, `adsb: no response stream`, `adsb: JSON parse error: … (heap=… largest=…)` | Transient network or adsb.fi hiccup; the previous frame is kept and the fetch task retries after the next gap. After 60 s with no successful fetch the traffic layer is cleared rather than shown stale |
+| `adsb: HTTP -1`, `adsb: HTTP -11`, `adsb: no response stream` | Transient network or adsb.fi hiccup; the previous frame is kept and the fetch task retries after the next gap. After 60 s with no successful fetch the traffic layer is cleared rather than shown stale |
+| `adsb: JSON parse error: IncompleteInput (heap=… largest=…)` | The response was cut off mid-body — almost always the server closing the reused keep-alive connection between requests, which is the trade-off for skipping the TLS handshake each cycle. **Check the heap figures in the message before assuming memory:** healthy is ~22–28 KB free with a ~9 KB largest block, and if those look normal it was the connection, not RAM. The next cycle renegotiates. Observed roughly once every 2–3 minutes on a domestic connection; one lost cycle is invisible on screen because the previous traffic keeps dead-reckoning |
 | Portal saves but nothing changes | `Invalid lat/lon in portal — keeping previous location` on serial means the coordinates failed parsing or range validation |
 | `.local` address won't resolve | mDNS is slow or blocked on some clients; use the IP printed on serial at boot |
 | Config portal serves a **blank page** (usually `/wifi` in a dense-Wi-Fi area) | WiFiManager builds each page into one contiguous `String` (~4.9 KB fixed plus ~278 B per scanned AP, so ~9.2 KB at ~16 APs), and while the radar is running the reused TLS session pins ~33 KB, leaving a largest free block of ~9.2 KB. Use `/param` (location, units, runways — a much smaller page), or hold BOOT 3 s to reboot into the setup portal, where no TLS session exists and the full heap is available |

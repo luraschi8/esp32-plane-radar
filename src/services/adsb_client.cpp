@@ -277,7 +277,12 @@ void stopSession() {
 }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
-  const unsigned long t_start = DEBUG_LOG_ENABLED ? millis() : 0;
+  [[maybe_unused]] const unsigned long t_start = DEBUG_LOG_ENABLED ? millis() : 0;
+  // Before http.begin(): this is the moment mbedTLS asks for its two ~16.4 KB
+  // blocks, so it is the only reading that explains an allocation failure. It
+  // also brackets the fetch -- a "before fetch" with no matching "fetch:" line
+  // is a stalled task.
+  DEBUG_LOG_HEAP("before fetch");
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;
@@ -294,6 +299,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   HTTPClient& http = s_http;
   if (!http.begin(s_client, url)) {
+    // The classic symptom of fragmentation: mbedTLS could not find its blocks.
+    DEBUG_LOG_HEAP("begin failed");
     Serial.println("adsb: http.begin failed");
     return false;
   }
@@ -307,6 +314,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_session_open = true;
   }
   if (code != HTTP_CODE_OK) {
+    DEBUG_LOG_HEAP("http failed");
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
     stopSession();  // force a fresh session next time
@@ -315,6 +323,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   WiFiClient* body = http.getStreamPtr();
   if (body == nullptr) {
+    DEBUG_LOG_HEAP("no stream");
     Serial.println("adsb: no response stream");
     http.end();
     stopSession();
@@ -330,7 +339,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   http.end();
   if (err) {
     Serial.printf("adsb: JSON parse error: %s (heap=%u largest=%u)\n",
-                  err.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+                  err.c_str(), static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMaxAllocHeap()));
     stopSession();
     return false;
   }
@@ -349,6 +359,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   // empty sky wipes real traffic off the panel. An empty sky is `[]`; anything
   // else is not this API and the last good list is kept until it expires.
   if (!doc["ac"].is<JsonArrayConst>()) {
+    DEBUG_LOG("fetch: rejected -- response is not the aircraft feed");
     Serial.println("adsb: 'ac' is missing or not an array");
     stopSession();
     return false;
@@ -393,12 +404,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   publish(back, n);
+  DEBUG_LOG("fetch: %u kept, %lu ms, stack free %u B", static_cast<unsigned>(n),
+            millis() - t_start, fetchTaskStackFree());
+
   // Periodically report the task's stack headroom: the mbedTLS handshake depth
   // varies with the server's certificate chain, so this can drift with no code
   // change. Rare enough to be free, frequent enough to catch creep.
-  DEBUG_LOG("fetch: %u aircraft kept, %lu ms, stack free %u B",
-            static_cast<unsigned>(n), millis() - t_start, fetchTaskStackFree());
-  DEBUG_LOG_HEAP("after publish");
   static uint8_t stack_report = 0;
   if ((stack_report++ & 0x1F) == 0) {
     Serial.printf("adsb: %u aircraft (task stack free %u B)\n",
