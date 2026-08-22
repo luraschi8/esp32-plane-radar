@@ -335,6 +335,12 @@ static void test_aircraft_cap_is_respected() {
   TEST_ASSERT_TRUE(fetch(big.c_str()));
   TEST_ASSERT_EQUAL_INT_MESSAGE((int)kMaxAircraft, (int)aircraftCount(),
       "the fixed buffer must cap rather than overflow");
+  // Independent bound: kMaxAircraft sizes two static Aircraft buffers, the tag
+  // rect array, and two arrays on the loop task's stack. Reading it on both
+  // sides above pins that a cap exists but never its value.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(64, (int)kMaxAircraft,
+      "changing this silently resizes two static buffers and ~2 KB of stack "
+      "in drawAircraft -- update the memory notes in CLAUDE.md if it moves");
 }
 
 int main(int, char**) {

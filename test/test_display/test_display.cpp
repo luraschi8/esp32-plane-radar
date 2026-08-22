@@ -419,7 +419,16 @@ static void test_the_shipped_dataset_never_reaches_the_caps() {
         "a runway indexes an airport that does not exist -- out-of-bounds read");
     ++runways_per_airport[kRunways[i].airport_idx];
   }
-  const float radius_km = 36.8f;             // widest preset's fetch radius
+  // Derived from the preset table, not hardcoded: adding a wider preset must
+  // widen this scan too, or the test that exists to catch silent truncation
+  // would itself go quietly out of date.
+  float radius_km = 0.0f;
+  for (size_t i = 0; i < kRangePresetCount; ++i) {
+    Preferences sp; sp.begin("planeradar", false); sp.putUChar("rangeIdx", (uint8_t)i); sp.end();
+    rangeInit();
+    if (fetchRadiusKm() > radius_km) radius_km = fetchRadiusKm();
+  }
+  TEST_ASSERT_TRUE_MESSAGE(radius_km > 30.0f, "sanity: widest fetch disc should exceed 30 km");
   int worst_strips = 0, worst_airports = 0;
   for (size_t c = 0; c < kAirportCount; ++c) {
     const float clat = kAirports[c].lat_e7 * 1e-7f;
@@ -455,6 +464,137 @@ static void test_an_in_range_airport_is_drawn_and_identified() {
       "an in-range airport must be both drawn and identified");
 }
 
+// ------------------------------- silently-deletable draw paths -------------
+// Each of the following could be removed entirely without any test failing.
+
+static void test_speed_vectors_are_drawn_for_moving_traffic() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 300, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  int vectors = 0;
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    if (o.color == kColorTrackVector) ++vectors;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, vectors, "a moving target must show its track vector");
+}
+
+static void test_a_stationary_target_has_no_speed_vector() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 0, 90, 0.1f, "AAA111"}};   // gs = 0
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  for (const auto& o : g_gfx.of(DrawOp::WideLine))
+    TEST_ASSERT_TRUE_MESSAGE(o.color != kColorTrackVector,
+        "a stationary target must not draw a vector");
+}
+
+// Traffic outside the ring is shown as a bearing cue on the screen rim.
+static void test_beyond_ring_traffic_becomes_a_rim_dot() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{60.0f, 60.0f, 300, 45, 0.1f, "FARNE1"}};   // NE, far outside
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Triangle),
+      "a target past the ring is not drawn as a symbol");
+  int dots = 0, dx = 0, dy = 0;
+  for (const auto& o : g_gfx.of(DrawOp::SmoothCircle)) {
+    if (o.r != kBeyondRingDotRadiusPx) continue;   // skip the centre dot
+    ++dots; dx = o.x - kCenterX; dy = o.y - kCenterY;
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, dots, "exactly one rim dot for one distant target");
+  TEST_ASSERT_TRUE_MESSAGE(dx > 0 && dy < 0, "a NE target must sit NE on the rim");
+  const int r = (int)sqrtf((float)(dx * dx + dy * dy));
+  TEST_ASSERT_INT_WITHIN_MESSAGE(2, kCenterX - kBeyondRingScreenMarginPx, r,
+      "the dot must sit on the screen rim, not at the target's true distance");
+}
+
+static void test_tag_lines_carry_their_distinct_colours() {
+  saveRunwaysFromPortal("");
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool callsign = false, type = false, alt = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text == "AAA111" && o.color == kColorLabel) callsign = true;
+    if (o.text == "B738"   && o.color == kColorTagType) type = true;
+    if (o.text == "3000 ft" && o.color == kColorTagAltitude) alt = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(callsign, "callsign line missing or wrong colour");
+  TEST_ASSERT_TRUE_MESSAGE(type, "type line missing or wrong colour");
+  TEST_ASSERT_TRUE_MESSAGE(alt, "altitude line missing or wrong colour");
+}
+
+static void test_crosshairs_are_centred_on_the_radar_origin() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool v = false, h = false;
+  for (const auto& o : g_gfx.of(DrawOp::FillRect)) {
+    if (o.h > 200 && o.w <= 4 && abs(o.x - kCenterX) <= 1) v = true;
+    if (o.w > 200 && o.h <= 4 && abs(o.y - kCenterY) <= 1) h = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(v, "the vertical spoke must pass through the centre");
+  TEST_ASSERT_TRUE_MESSAGE(h, "the horizontal spoke must pass through the centre");
+}
+
+static void test_cardinal_labels_are_in_the_right_places() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  int ny = 999, sy = -999, wx = 999, ex = -999;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) {
+    if (o.text == "N") ny = o.y;
+    if (o.text == "S") sy = o.y;
+    if (o.text == "W") wx = o.x;
+    if (o.text == "E") ex = o.x;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(ny < kCenterY, "N must be in the upper half");
+  TEST_ASSERT_TRUE_MESSAGE(sy > kCenterY, "S must be in the lower half");
+  TEST_ASSERT_TRUE_MESSAGE(wx < kCenterX, "W must be on the left");
+  TEST_ASSERT_TRUE_MESSAGE(ex > kCenterX, "E must be on the right");
+}
+
+static void test_the_scale_label_follows_the_range_and_units() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  bool km = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "10km") km = true;
+  TEST_ASSERT_TRUE_MESSAGE(km, "the 10 km preset must label ring 3 as 10km");
+  g_gfx.reset();
+  saveMilesFromPortal("T");
+  radarDisplayDraw();
+  bool mi = false;
+  for (const auto& o : g_gfx.of(DrawOp::Text)) if (o.text == "6mi") mi = true;
+  TEST_ASSERT_TRUE_MESSAGE(mi, "with miles selected the same ring reads 6mi");
+  saveMilesFromPortal("");
+}
+
+// The producer of blitted==false: if the aircraft list cannot be locked, the
+// frame must NOT be pushed, or every target flashes off for a frame.
+static void test_a_locked_aircraft_list_suppresses_the_blit() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  // aircraftLock() short-circuits to true when no mutex exists, so the lock
+  // path is only reachable once the fetch task has been started.
+  TEST_ASSERT_TRUE_MESSAGE(services::adsb::startFetchTask(),
+                           "need a real mutex for the lock to be able to fail");
+  g_gfx.reset();
+  g_mutex_take_fails = 1;
+  const bool blitted = radarDisplayRefreshAircraft();
+  TEST_ASSERT_FALSE_MESSAGE(blitted, "a frame missing its traffic must report not-drawn");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)g_gfx.count(DrawOp::Push),
+      "pushing it would flash every target off for a frame");
+}
+
+static void test_the_grid_is_cleared_every_frame() {
+  Target t[] = {{2.0f, 0.0f, 200, 90, 0.1f, "AAA111"}};
+  publishTargets(t, 1);
+  radarDisplayDraw();
+  TEST_ASSERT_TRUE_MESSAGE(g_gfx.count(DrawOp::FillScreen) >= 1,
+      "without a clear, the previous frame's traffic ghosts");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // These two must run first: the frame sprite is created once and cached in a
@@ -472,6 +612,15 @@ int main(int, char**) {
   RUN_TEST(test_a_normal_frame_is_blitted_once);
   RUN_TEST(test_crosshairs_are_rectangles_not_antialiased_lines);
   RUN_TEST(test_grid_has_the_expected_rings);
+  RUN_TEST(test_speed_vectors_are_drawn_for_moving_traffic);
+  RUN_TEST(test_a_stationary_target_has_no_speed_vector);
+  RUN_TEST(test_beyond_ring_traffic_becomes_a_rim_dot);
+  RUN_TEST(test_tag_lines_carry_their_distinct_colours);
+  RUN_TEST(test_crosshairs_are_centred_on_the_radar_origin);
+  RUN_TEST(test_cardinal_labels_are_in_the_right_places);
+  RUN_TEST(test_the_scale_label_follows_the_range_and_units);
+  RUN_TEST(test_a_locked_aircraft_list_suppresses_the_blit);
+  RUN_TEST(test_the_grid_is_cleared_every_frame);
   RUN_TEST(test_runways_are_drawn_at_a_real_airport);
   RUN_TEST(test_no_runways_when_the_overlay_is_switched_off);
   RUN_TEST(test_no_runways_in_the_middle_of_the_ocean);

@@ -155,10 +155,9 @@ static void test_the_interrupt_is_attached_only_once() {
 
 // --------------------------------------------------- rollover safety -------
 
-// millis() is 32-bit on device but 64-bit here, so the real wrap cannot be
-// reproduced. Pin the IDIOM instead: elapsed-since-start survives the wrap,
-// a precomputed deadline does not. waitForLinkWithUi used the broken form.
-// The real function, driven across the 49.7-day boundary. The old
+// --------------------------------------------------- rollover safety -------
+
+// Drives the REAL function across the 49.7-day boundary. The old
 // `deadline = millis() + attempt_ms` form exits instantly here, aborting every
 // WiFi connect attempt for the duration of the wrap.
 static void test_connect_wait_still_waits_across_the_millis_wrap() {
@@ -170,19 +169,6 @@ static void test_connect_wait_still_waits_across_the_millis_wrap() {
   char m[96];
   snprintf(m, sizeof(m), "waited %u ms of a 15000 ms budget across the wrap", elapsed);
   TEST_ASSERT_TRUE_MESSAGE(elapsed >= 14000u, m);
-}
-
-static void test_elapsed_comparison_survives_the_millis_wrap() {
-  const uint32_t start = 0xFFFFFF00u;         // ~4 s before the 49.7-day wrap
-  const uint32_t window = 15000u;
-  const uint32_t now = start + 100u;          // 100 ms later: NOT yet wrapped,
-                                              // but start + window HAS wrapped
-
-  const uint32_t bad_deadline = start + window;
-  TEST_ASSERT_FALSE_MESSAGE(now < bad_deadline,
-      "the precomputed-deadline form exits immediately across the wrap");
-  TEST_ASSERT_TRUE_MESSAGE(now - start < window,
-      "the elapsed form still reports 5 s of a 15 s window");
 }
 
 int main(int, char**) {
@@ -201,6 +187,5 @@ int main(int, char**) {
   RUN_TEST(test_button_state_is_readable_directly);
   RUN_TEST(test_the_interrupt_is_attached_only_once);
   RUN_TEST(test_connect_wait_still_waits_across_the_millis_wrap);
-  RUN_TEST(test_elapsed_comparison_survives_the_millis_wrap);
   return UNITY_END();
 }
