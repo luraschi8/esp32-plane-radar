@@ -34,13 +34,21 @@ uint16_t kColorRunwayLabel = 0x7DFF;
 
 using namespace ui::radar;
 
-/** Madrid-Barajas: four runways, so the cap of 1 truncates three of them. */
-static constexpr double kLemdLat = 40.4719;
-static constexpr double kLemdLon = -3.5626;
+/**
+ * Newark: KEWR, KJFK and KLGA all fall inside the widest preset's fetch disc.
+ * With the cap at 1 only the first airport gets a strip, so the later ones are
+ * fully truncated -- which is the only way to observe whether their labels are
+ * still collected. (Centring on a single airport hides the bug: its own first
+ * runway is inserted before the cap fills, so it gets labelled either way.)
+ */
+static constexpr double kLemdLat = 40.6894;
+static constexpr double kLemdLon = -74.1705;
 
 void setUp() {
   g_nvs.reset(); g_gfx.resetAll(); mockSetMs(500000); g_font_is_smooth = false;
-  Preferences seed; seed.begin("planeradar", false); seed.putUChar("rangeIdx", 1); seed.end();
+  Preferences seed; seed.begin("planeradar", false); // Widest preset (25 km ring -> ~36.8 km fetch disc): the radius my
+  // multi-airport centre was chosen against.
+  seed.putUChar("rangeIdx", 4); seed.end();
   rangeInit();
   char a[32], b[32];
   snprintf(a, sizeof(a), "%.6f", kLemdLat);
@@ -70,16 +78,22 @@ static void test_the_cap_really_truncates_here() {
 // THE BUG: label collection used to sit AFTER the cap check, so once the cache
 // filled, later airports lost their strips AND their identity. Moving it before
 // the check is the fix; this is what pins it.
-static void test_a_truncated_airport_keeps_its_label() {
+static void test_a_fully_truncated_airport_keeps_its_label() {
   ui::runway::drawLargeAirportRunways(tft);
-  TEST_ASSERT_TRUE_MESSAGE(drewLabel("LEMD"),
-      "LEMD has four strips and the cap is 1, so three are dropped -- its ICAO "
-      "label must still be drawn, or a truncated airport becomes anonymous");
+  // Only one strip fits, so at least two of these three airports contribute no
+  // strip at all. Every one of them must still be identified.
+  int labelled = 0;
+  for (const char* icao : {"KEWR", "KJFK", "KLGA"}) if (drewLabel(icao)) ++labelled;
+  char m[160];
+  snprintf(m, sizeof(m),
+           "only %d of KEWR/KJFK/KLGA labelled with the strip cap at 1 -- an "
+           "airport whose strips are dropped must not lose its identity", labelled);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, labelled, m);
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_cap_really_truncates_here);
-  RUN_TEST(test_a_truncated_airport_keeps_its_label);
+  RUN_TEST(test_a_fully_truncated_airport_keeps_its_label);
   return UNITY_END();
 }
